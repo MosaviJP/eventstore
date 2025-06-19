@@ -126,10 +126,6 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool) (str
 		conditions = append(conditions, `tagvalues && ARRAY[`+makePlaceHolders(len(values))+`]`)
 
 		totalTags += len(values)
-		if totalTags > b.QueryTagsLimit {
-			// too many tags, fail everything
-			return "", nil, TooManyTagValues
-		}
 	}
 
 	if filter.Since != nil {
