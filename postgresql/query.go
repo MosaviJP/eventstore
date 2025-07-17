@@ -12,7 +12,13 @@ import (
 )
 
 func (b *PostgresBackend) QueryEvents(ctx context.Context, filter nostr.Filter) (ch chan *nostr.Event, err error) {
-	query, params, err := b.queryEventsSql(filter, false)
+	// 尝试从 context 中获取用户 pubkey
+	userPubkey := ""
+	if pubkey, ok := ctx.Value("userPubkey").(string); ok {
+		userPubkey = pubkey
+	}
+	
+	query, params, err := b.queryEventsSql(filter, false, userPubkey)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +53,7 @@ func (b *PostgresBackend) QueryEvents(ctx context.Context, filter nostr.Filter) 
 }
 
 func (b *PostgresBackend) CountEvents(ctx context.Context, filter nostr.Filter) (int64, error) {
-	query, params, err := b.queryEventsSql(filter, true)
+	query, params, err := b.queryEventsSql(filter, true, "")
 	if err != nil {
 		return 0, err
 	}
@@ -71,9 +77,39 @@ var (
 	EmptyTagSet      = errors.New("empty tag set")
 )
 
-func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool) (string, []any, error) {
+func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, userPubkey string) (string, []any, error) {
 	conditions := make([]string, 0, 7)
 	params := make([]any, 0, 20)
+
+	// 先检查是否需要联表查询，这会影响 kinds 条件的处理方式
+	needDisappearingJoin := false
+	hasDisappearingKinds := false
+	
+	if !doCount && userPubkey != "" && len(filter.Kinds) > 0 {
+		for _, kind := range filter.Kinds {
+			if kind == 1404 || (kind == 1059) {
+				hasDisappearingKinds = true
+				break
+			}
+		}
+		
+		// 检查表是否存在，如果不存在则不进行联表查询
+		if hasDisappearingKinds {
+			// 简单的表存在性检查
+			var exists bool
+			err := b.DB.QueryRow(`
+				SELECT EXISTS (
+					SELECT FROM information_schema.tables 
+					WHERE table_schema = 'moss_api' 
+					AND table_name = 'dismsg_user_status'
+				)`).Scan(&exists)
+			
+			if err == nil && exists {
+				needDisappearingJoin = true
+			}
+			// 如果表不存在或查询失败，则不进行联表查询，回退到普通查询
+		}
+	}
 
 	if len(filter.IDs) > 0 {
 		if len(filter.IDs) > b.QueryIDsLimit {
@@ -99,7 +135,9 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool) (str
 		conditions = append(conditions, ` pubkey IN (`+makePlaceHolders(len(filter.Authors))+`)`)
 	}
 
-	if len(filter.Kinds) > 0 {
+	// 只有在不需要联表查询时才添加普通的 kind 条件
+	// 如果需要联表查询，kinds 条件将在后面的 extraConditions 中处理
+	if len(filter.Kinds) > 0 && !needDisappearingJoin {
 		if len(filter.Kinds) > b.QueryKindsLimit {
 			// too many kinds, fail everything
 			return "", nil, TooManyKinds
@@ -109,6 +147,11 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool) (str
 			params = append(params, v)
 		}
 		conditions = append(conditions, `kind IN (`+makePlaceHolders(len(filter.Kinds))+`)`)
+	} else if len(filter.Kinds) > 0 && needDisappearingJoin {
+		// 检查 kinds 数量限制，但不添加到条件中（将在后面处理）
+		if len(filter.Kinds) > b.QueryKindsLimit {
+			return "", nil, TooManyKinds
+		}
 	}
 
 	totalTags := 0
@@ -146,6 +189,52 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool) (str
 		conditions = append(conditions, `true`)
 	}
 
+	// 构建基础 FROM 子句和额外的条件
+	fromClause := "event"
+	extraConditions := make([]string, 0)
+	
+	if needDisappearingJoin {
+		fromClause = "event LEFT JOIN moss_api.dismsg_user_status dus ON event.id = dus.event_id AND dus.user_pubkey = ?"
+		params = append(params, userPubkey)
+		
+		// 对于混合类型查询，我们需要更精确的条件：
+		// 1. 非阅后即焚事件（如 kind 4）：正常显示
+		// 2. 阅后即焚事件：只显示未过期的
+		disappearingConditions := make([]string, 0)
+		normalConditions := make([]string, 0)
+		
+		for _, kind := range filter.Kinds {
+			if kind == 1404 {
+				// 1404 事件：必须未过期
+				disappearingConditions = append(disappearingConditions, 
+					"(event.kind = 1404 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
+			} else if kind == 1059 {
+				// 1059 事件且 k=3048：必须未过期
+				disappearingConditions = append(disappearingConditions, 
+					"(event.kind = 1059 AND event.tagvalues && ARRAY['3048'] AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
+			} else {
+				// 普通事件：正常显示
+				normalConditions = append(normalConditions, fmt.Sprintf("event.kind = %d", kind))
+			}
+		}
+		
+		// 组合条件：普通事件 OR 未过期的阅后即焚事件
+		combinedConditions := make([]string, 0)
+		if len(normalConditions) > 0 {
+			combinedConditions = append(combinedConditions, "("+strings.Join(normalConditions, " OR ")+")")
+		}
+		if len(disappearingConditions) > 0 {
+			combinedConditions = append(combinedConditions, "("+strings.Join(disappearingConditions, " OR ")+")")
+		}
+		
+		if len(combinedConditions) > 0 {
+			extraConditions = append(extraConditions, "("+strings.Join(combinedConditions, " OR ")+")")
+		}
+	}
+
+	// 合并所有条件
+	allConditions := append(conditions, extraConditions...)
+
 	if filter.Limit < 1 || filter.Limit > b.QueryLimit {
 		params = append(params, b.QueryLimit)
 	} else {
@@ -156,15 +245,15 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool) (str
 	if doCount {
 		query = sqlx.Rebind(sqlx.BindType("postgres"), `SELECT
           COUNT(*)
-        FROM event WHERE `+
-			strings.Join(conditions, " AND ")+
+        FROM `+fromClause+` WHERE `+
+			strings.Join(allConditions, " AND ")+
 			" LIMIT ?")
 	} else {
 		query = sqlx.Rebind(sqlx.BindType("postgres"), `SELECT
-          id, pubkey, created_at, kind, tags, content, sig
-        FROM event WHERE `+
-			strings.Join(conditions, " AND ")+
-			" ORDER BY created_at DESC, id LIMIT ?")
+          event.id, event.pubkey, event.created_at, event.kind, event.tags, event.content, event.sig
+        FROM `+fromClause+` WHERE `+
+			strings.Join(allConditions, " AND ")+
+			" ORDER BY event.created_at DESC, event.id LIMIT ?")
 	}
 
 	return query, params, nil
