@@ -7,11 +7,11 @@ import (
 	"os"
 	"testing"
 
-	"github.com/fiatjaf/eventstore"
-	"github.com/fiatjaf/eventstore/badger"
-	"github.com/fiatjaf/eventstore/lmdb"
-	"github.com/fiatjaf/eventstore/slicestore"
-	"github.com/fiatjaf/eventstore/sqlite3"
+	"github.com/MosaviJP/eventstore"
+	"github.com/MosaviJP/eventstore/badger"
+	"github.com/MosaviJP/eventstore/lmdb"
+	"github.com/MosaviJP/eventstore/slicestore"
+	"github.com/MosaviJP/eventstore/sqlite3"
 	"github.com/nbd-wtf/go-nostr"
 )
 

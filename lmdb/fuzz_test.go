@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/PowerDNS/lmdb-go/lmdb"
-	"github.com/fiatjaf/eventstore"
+	"github.com/MosaviJP/eventstore"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/slices"

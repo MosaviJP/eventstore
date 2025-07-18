@@ -6,12 +6,12 @@ import (
 	"testing"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
-	"github.com/fiatjaf/eventstore"
-	"github.com/fiatjaf/eventstore/badger"
-	"github.com/fiatjaf/eventstore/lmdb"
-	"github.com/fiatjaf/eventstore/postgresql"
-	"github.com/fiatjaf/eventstore/slicestore"
-	"github.com/fiatjaf/eventstore/sqlite3"
+	"github.com/MosaviJP/eventstore"
+	"github.com/MosaviJP/eventstore/badger"
+	"github.com/MosaviJP/eventstore/lmdb"
+	"github.com/MosaviJP/eventstore/postgresql"
+	"github.com/MosaviJP/eventstore/slicestore"
+	"github.com/MosaviJP/eventstore/sqlite3"
 )
 
 const (

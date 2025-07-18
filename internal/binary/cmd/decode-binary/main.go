@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/fiatjaf/eventstore/internal/binary"
+	"github.com/MosaviJP/eventstore/internal/binary"
 	"github.com/nbd-wtf/go-nostr"
 )
 

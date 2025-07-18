@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log"
 
+	bin "github.com/MosaviJP/eventstore/internal/binary"
 	"github.com/dgraph-io/badger/v4"
-	bin "github.com/fiatjaf/eventstore/internal/binary"
 	"github.com/nbd-wtf/go-nostr"
 )
 

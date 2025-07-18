@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/fiatjaf/eventstore/internal"
+	"github.com/MosaviJP/eventstore/internal"
 	"github.com/nbd-wtf/go-nostr"
 )
 

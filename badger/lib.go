@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/dgraph-io/badger/v4"
-	"github.com/fiatjaf/eventstore"
+	"github.com/MosaviJP/eventstore"
 	"github.com/nbd-wtf/go-nostr"
 )
 

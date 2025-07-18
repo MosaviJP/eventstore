@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fiatjaf/eventstore"
+	"github.com/MosaviJP/eventstore"
 	"github.com/mailru/easyjson"
 	"github.com/nbd-wtf/go-nostr"
 )

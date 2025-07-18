@@ -12,8 +12,8 @@ import (
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esutil"
-	"github.com/fiatjaf/eventstore"
-	"github.com/fiatjaf/eventstore/internal"
+	"github.com/MosaviJP/eventstore"
+	"github.com/MosaviJP/eventstore/internal"
 	"github.com/nbd-wtf/go-nostr"
 )
 

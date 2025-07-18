@@ -3,7 +3,7 @@ package count
 import (
 	"context"
 
-	"github.com/fiatjaf/eventstore"
+	"github.com/MosaviJP/eventstore"
 	"github.com/nbd-wtf/go-nostr"
 )
 

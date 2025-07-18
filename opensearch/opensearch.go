@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fiatjaf/eventstore"
-	"github.com/fiatjaf/eventstore/internal"
+	"github.com/MosaviJP/eventstore"
+	"github.com/MosaviJP/eventstore/internal"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/opensearch-project/opensearch-go/v4"
 	"github.com/opensearch-project/opensearch-go/v4/opensearchapi"

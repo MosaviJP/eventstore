@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/fiatjaf/eventstore"
-	"github.com/fiatjaf/eventstore/internal"
+	"github.com/MosaviJP/eventstore"
+	"github.com/MosaviJP/eventstore/internal"
 	"github.com/nbd-wtf/go-nostr"
 	"golang.org/x/exp/slices"
 )

@@ -9,9 +9,9 @@ import (
 	"log"
 
 	"github.com/dgraph-io/badger/v4"
-	"github.com/fiatjaf/eventstore"
-	"github.com/fiatjaf/eventstore/internal"
-	bin "github.com/fiatjaf/eventstore/internal/binary"
+	"github.com/MosaviJP/eventstore"
+	"github.com/MosaviJP/eventstore/internal"
+	bin "github.com/MosaviJP/eventstore/internal/binary"
 	"github.com/nbd-wtf/go-nostr"
 	"golang.org/x/exp/slices"
 )

@@ -1,4 +1,4 @@
-module github.com/fiatjaf/eventstore
+module github.com/MosaviJP/eventstore
 
 go 1.24.1
 

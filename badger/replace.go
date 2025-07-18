@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/MosaviJP/eventstore/internal"
 	"github.com/dgraph-io/badger/v4"
-	"github.com/fiatjaf/eventstore/internal"
 	"github.com/nbd-wtf/go-nostr"
 )
 

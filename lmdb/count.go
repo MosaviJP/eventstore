@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 
 	"github.com/PowerDNS/lmdb-go/lmdb"
-	bin "github.com/fiatjaf/eventstore/internal/binary"
+	bin "github.com/MosaviJP/eventstore/internal/binary"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip45"
 	"github.com/nbd-wtf/go-nostr/nip45/hyperloglog"

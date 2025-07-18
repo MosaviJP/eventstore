@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/edgedb/edgedb-go"
-	"github.com/fiatjaf/eventstore"
+	"github.com/MosaviJP/eventstore"
 )
 
 var _ eventstore.Store = (*EdgeDBBackend)(nil)

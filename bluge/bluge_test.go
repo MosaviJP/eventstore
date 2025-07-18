@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/fiatjaf/eventstore/badger"
+	"github.com/MosaviJP/eventstore/badger"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/stretchr/testify/assert"
 )

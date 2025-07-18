@@ -7,8 +7,8 @@ import (
 	"math"
 
 	"github.com/PowerDNS/lmdb-go/lmdb"
-	"github.com/fiatjaf/eventstore"
-	bin "github.com/fiatjaf/eventstore/internal/binary"
+	"github.com/MosaviJP/eventstore"
+	bin "github.com/MosaviJP/eventstore/internal/binary"
 	"github.com/nbd-wtf/go-nostr"
 )
 
