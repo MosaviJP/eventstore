@@ -120,7 +120,7 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		for _, v := range filter.IDs {
 			params = append(params, v)
 		}
-		conditions = append(conditions, ` id IN (`+makePlaceHolders(len(filter.IDs))+`)`)
+		conditions = append(conditions, ` event.id IN (`+makePlaceHolders(len(filter.IDs))+`)`)
 	}
 
 	if len(filter.Authors) > 0 {
@@ -132,7 +132,7 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		for _, v := range filter.Authors {
 			params = append(params, v)
 		}
-		conditions = append(conditions, ` pubkey IN (`+makePlaceHolders(len(filter.Authors))+`)`)
+		conditions = append(conditions, ` event.pubkey IN (`+makePlaceHolders(len(filter.Authors))+`)`)
 	}
 
 	// 只有在不需要联表查询时才添加普通的 kind 条件
@@ -146,7 +146,7 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		for _, v := range filter.Kinds {
 			params = append(params, v)
 		}
-		conditions = append(conditions, `kind IN (`+makePlaceHolders(len(filter.Kinds))+`)`)
+		conditions = append(conditions, `event.kind IN (`+makePlaceHolders(len(filter.Kinds))+`)`)
 	} else if len(filter.Kinds) > 0 && needDisappearingJoin {
 		// 检查 kinds 数量限制，但不添加到条件中（将在后面处理）
 		if len(filter.Kinds) > b.QueryKindsLimit {
@@ -166,21 +166,21 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		}
 
 		// each separate tag key is an independent condition
-		conditions = append(conditions, `tagvalues && ARRAY[`+makePlaceHolders(len(values))+`]`)
+		conditions = append(conditions, `event.tagvalues && ARRAY[`+makePlaceHolders(len(values))+`]`)
 
 		totalTags += len(values)
 	}
 
 	if filter.Since != nil {
-		conditions = append(conditions, `created_at >= ?`)
+		conditions = append(conditions, `event.created_at >= ?`)
 		params = append(params, filter.Since)
 	}
 	if filter.Until != nil {
-		conditions = append(conditions, `created_at <= ?`)
+		conditions = append(conditions, `event.created_at <= ?`)
 		params = append(params, filter.Until)
 	}
 	if filter.Search != "" {
-		conditions = append(conditions, `content LIKE ?`)
+		conditions = append(conditions, `event.content LIKE ?`)
 		params = append(params, `%`+strings.ReplaceAll(filter.Search, `%`, `\%`)+`%`)
 	}
 
