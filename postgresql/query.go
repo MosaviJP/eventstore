@@ -111,6 +111,11 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		}
 	}
 
+	// 如果需要联表查询，首先添加 userPubkey 参数
+	if needDisappearingJoin {
+		params = append(params, userPubkey)
+	}
+
 	if len(filter.IDs) > 0 {
 		if len(filter.IDs) > b.QueryIDsLimit {
 			// too many ids, fail everything
@@ -195,7 +200,6 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	
 	if needDisappearingJoin {
 		fromClause = "event LEFT JOIN moss_api.dismsg_user_status dus ON event.id = dus.event_id AND dus.user_pubkey = ?"
-		params = append(params, userPubkey)
 		
 		// 对于混合类型查询，我们需要更精确的条件：
 		// 1. 非阅后即焚事件（如 kind 4）：正常显示
