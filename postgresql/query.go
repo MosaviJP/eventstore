@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
@@ -22,6 +23,9 @@ func (b *PostgresBackend) QueryEvents(ctx context.Context, filter nostr.Filter) 
 	if err != nil {
 		return nil, err
 	}
+
+	// 打印实际执行的SQL语句（嵌入参数）
+	log.Printf("Executing SQL Query: %s", formatSQLWithParams(query, params))
 
 	rows, err := b.DB.QueryContext(ctx, query, params...)
 	if err != nil && err != sql.ErrNoRows {
@@ -58,6 +62,9 @@ func (b *PostgresBackend) CountEvents(ctx context.Context, filter nostr.Filter) 
 		return 0, err
 	}
 
+	// 打印实际执行的SQL语句（嵌入参数）
+	log.Printf("Executing Count SQL Query: %s", formatSQLWithParams(query, params))
+
 	var count int64
 	if err = b.DB.QueryRowContext(ctx, query, params...).Scan(&count); err != nil && err != sql.ErrNoRows {
 		return 0, fmt.Errorf("failed to fetch events using query %q: %w", query, err)
@@ -67,6 +74,39 @@ func (b *PostgresBackend) CountEvents(ctx context.Context, filter nostr.Filter) 
 
 func makePlaceHolders(n int) string {
 	return strings.TrimRight(strings.Repeat("?,", n), ",")
+}
+
+// formatSQLWithParams 将参数嵌入到SQL语句中，用于调试输出
+func formatSQLWithParams(query string, params []any) string {
+	result := query
+	for i, param := range params {
+		placeholder := "$" + fmt.Sprintf("%d", i+1)
+		var valueStr string
+		
+		switch v := param.(type) {
+		case string:
+			valueStr = fmt.Sprintf("'%s'", strings.ReplaceAll(v, "'", "''"))
+		case int, int64, int32:
+			valueStr = fmt.Sprintf("%d", v)
+		case float64, float32:
+			valueStr = fmt.Sprintf("%f", v)
+		case bool:
+			valueStr = fmt.Sprintf("%t", v)
+		case *nostr.Timestamp:
+			if v != nil {
+				valueStr = fmt.Sprintf("%d", int64(*v))
+			} else {
+				valueStr = "NULL"
+			}
+		case nostr.Timestamp:
+			valueStr = fmt.Sprintf("%d", int64(v))
+		default:
+			valueStr = fmt.Sprintf("'%v'", v)
+		}
+		
+		result = strings.Replace(result, placeholder, valueStr, 1)
+	}
+	return result
 }
 
 var (
