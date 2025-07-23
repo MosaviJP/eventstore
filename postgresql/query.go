@@ -26,6 +26,7 @@ func (b *PostgresBackend) QueryEvents(ctx context.Context, filter nostr.Filter) 
 
 	// 打印实际执行的SQL语句（嵌入参数）
 	log.Printf("Executing SQL Query: %s", formatSQLWithParams(query, params))
+	// log.Printf("filters: Kinds=%v, tags=%v", filter.Kinds, filter.Tags)
 
 	rows, err := b.DB.QueryContext(ctx, query, params...)
 	if err != nil && err != sql.ErrNoRows {
@@ -121,33 +122,39 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	conditions := make([]string, 0, 7)
 	params := make([]any, 0, 20)
 
-	// 先检查是否需要联表查询，这会影响 kinds 条件的处理方式
-	needDisappearingJoin := false
-	hasDisappearingKinds := false
-	
-	if !doCount && userPubkey != "" && len(filter.Kinds) > 0 {
-		for _, kind := range filter.Kinds {
-			if kind == 1404 || (kind == 1059) {
-				hasDisappearingKinds = true
+	// 判断 tagValue 中是否包含 "3048"
+	has3048 := false
+	for _, values := range filter.Tags {
+		for _, tagValue := range values {
+			if tagValue == "3048" {
+				has3048 = true
 				break
 			}
 		}
-		
-		// 检查表是否存在，如果不存在则不进行联表查询
-		if hasDisappearingKinds {
-			// 简单的表存在性检查
-			var exists bool
-			err := b.DB.QueryRow(`
-				SELECT EXISTS (
-					SELECT FROM information_schema.tables 
-					WHERE table_schema = 'moss_api' 
-					AND table_name = 'dismsg_user_status'
-				)`).Scan(&exists)
-			
-			if err == nil && exists {
-				needDisappearingJoin = true
+		if has3048 {
+			break
+		}
+	}
+
+	// 精细判断是否需要联表：仅当存在 kind==1404，或 kind==1059 且 tagValue 包含3048
+	needDisappearingJoin := false
+	if !doCount && userPubkey != "" && len(filter.Kinds) > 0 {
+		for _, kind := range filter.Kinds {
+			if kind == 1404 || (kind == 1059 && has3048) {
+				// 检查表是否存在
+				var exists bool
+				err := b.DB.QueryRow(`
+					SELECT EXISTS (
+						SELECT FROM information_schema.tables 
+						WHERE table_schema = 'moss_api' 
+						AND table_name = 'dismsg_user_status'
+					)`).Scan(&exists)
+				
+				if err == nil && exists {
+					needDisappearingJoin = true
+				}
+				break
 			}
-			// 如果表不存在或查询失败，则不进行联表查询，回退到普通查询
 		}
 	}
 
@@ -180,41 +187,25 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		conditions = append(conditions, ` event.pubkey IN (`+makePlaceHolders(len(filter.Authors))+`)`)
 	}
 
-	// 只有在不需要联表查询时才添加普通的 kind 条件
-	// 如果需要联表查询，kinds 条件将在后面的 extraConditions 中处理
-	if len(filter.Kinds) > 0 && !needDisappearingJoin {
-		if len(filter.Kinds) > b.QueryKindsLimit {
-			// too many kinds, fail everything
-			return "", nil, TooManyKinds
-		}
-
-		for _, v := range filter.Kinds {
-			params = append(params, v)
-		}
-		conditions = append(conditions, `event.kind IN (`+makePlaceHolders(len(filter.Kinds))+`)`)
-	} else if len(filter.Kinds) > 0 && needDisappearingJoin {
-		// 检查 kinds 数量限制，但不添加到条件中（将在后面处理）
-		if len(filter.Kinds) > b.QueryKindsLimit {
-			return "", nil, TooManyKinds
-		}
-	}
-
-	totalTags := 0
+	normalTagConditions := make([]string, 0)
 	for _, values := range filter.Tags {
 		if len(values) == 0 {
 			// any tag set to [] is wrong
 			return "", nil, EmptyTagSet
 		}
-
+		tagPlaceholders := make([]string, 0, len(values))
 		for _, tagValue := range values {
+			if tagValue == "3048" {
+				continue // 特殊处理的 tagValue，不用于普通过滤
+			}
 			params = append(params, tagValue)
+			tagPlaceholders = append(tagPlaceholders, "?")
 		}
-
-		// each separate tag key is an independent condition
-		conditions = append(conditions, `event.tagvalues && ARRAY[`+makePlaceHolders(len(values))+`]`)
-
-		totalTags += len(values)
+		if len(tagPlaceholders) > 0 {
+			normalTagConditions = append(normalTagConditions, `event.tagvalues && ARRAY[`+strings.Join(tagPlaceholders, ",")+`]`)
+		}
 	}
+	conditions = append(conditions, normalTagConditions...)
 
 	if filter.Since != nil {
 		conditions = append(conditions, `event.created_at >= ?`)
@@ -240,40 +231,35 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	
 	if needDisappearingJoin {
 		fromClause = "event LEFT JOIN moss_api.dismsg_user_status dus ON event.id = dus.event_id AND dus.user_pubkey = ?"
-		
-		// 对于混合类型查询，我们需要更精确的条件：
-		// 1. 非阅后即焚事件（如 kind 4）：正常显示
-		// 2. 阅后即焚事件：只显示未过期的
-		disappearingConditions := make([]string, 0)
-		normalConditions := make([]string, 0)
-		
-		for _, kind := range filter.Kinds {
-			if kind == 1404 {
-				// 1404 事件：必须未过期
-				disappearingConditions = append(disappearingConditions, 
-					"(event.kind = 1404 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
-			} else if kind == 1059 {
-				// 1059 事件且 k=3048：必须未过期
-				disappearingConditions = append(disappearingConditions, 
+	}
+
+	normalKindConditions := make([]string, 0)
+	disappearingConditions := make([]string, 0)
+	for _, kind := range filter.Kinds {
+		switch kind {
+		case 1404:
+			disappearingConditions = append(disappearingConditions,
+				"(event.kind = 1404 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
+		case 1059:
+			if has3048 {
+				disappearingConditions = append(disappearingConditions,
 					"(event.kind = 1059 AND event.tagvalues && ARRAY['3048'] AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
-			} else {
-				// 普通事件：正常显示
-				normalConditions = append(normalConditions, fmt.Sprintf("event.kind = %d", kind))
 			}
+			normalKindConditions = append(normalKindConditions, "event.kind = 1059")
+		default:
+			normalKindConditions = append(normalKindConditions, fmt.Sprintf("event.kind = %d", kind))
 		}
-		
-		// 组合条件：普通事件 OR 未过期的阅后即焚事件
-		combinedConditions := make([]string, 0)
-		if len(normalConditions) > 0 {
-			combinedConditions = append(combinedConditions, "("+strings.Join(normalConditions, " OR ")+")")
-		}
-		if len(disappearingConditions) > 0 {
-			combinedConditions = append(combinedConditions, "("+strings.Join(disappearingConditions, " OR ")+")")
-		}
-		
-		if len(combinedConditions) > 0 {
-			extraConditions = append(extraConditions, "("+strings.Join(combinedConditions, " OR ")+")")
-		}
+	}
+
+	combinedConditions := make([]string, 0)
+	if len(normalKindConditions) > 0 {
+		combinedConditions = append(combinedConditions, "("+strings.Join(normalKindConditions, " OR ")+")")
+	}
+	if len(disappearingConditions) > 0 {
+		combinedConditions = append(combinedConditions, "("+strings.Join(disappearingConditions, " OR ")+")")
+	}
+	if len(combinedConditions) > 0 {
+		extraConditions = append(extraConditions, "("+strings.Join(combinedConditions, " OR ")+")")
 	}
 
 	// 合并所有条件
