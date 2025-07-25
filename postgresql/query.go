@@ -212,40 +212,42 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	   // k标签处理逻辑
 	   kTagCondition := ""
 	   if len(kTagValues) > 0 {
-			   if has3048 {
-					   // 有3048，非3048的k标签 OR (3048且未过期)
-					   non3048 := make([]string, 0)
-					   for _, v := range kTagValues {
-							   if v != "3048" {
-									   non3048 = append(non3048, v)
-							   }
-					   }
-					   orParts := make([]string, 0)
-					   if len(non3048) > 0 {
-							   for _, v := range non3048 {
-									   orParts = append(orParts, `event.tagvalues && ARRAY['`+v+`']`)
-							   }
-					   }
-					   // 3048且未过期
-					   orParts = append(orParts, `(event.tagvalues && ARRAY['3048'] AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))`)
-					   kTagCondition = "(" + strings.Join(orParts, " OR ") + ")"
-			   } else {
-					   // 没有3048，所有k标签和其他标签一样AND
-					   tagPlaceholders := make([]string, 0, len(kTagValues))
-					   for _, tagValue := range kTagValues {
-							   params = append(params, tagValue)
-							   tagPlaceholders = append(tagPlaceholders, "?")
-					   }
-					   if len(tagPlaceholders) > 0 {
-							   kTagCondition = `event.tagvalues && ARRAY[` + strings.Join(tagPlaceholders, ",") + "]"
-					   }
-			   }
+			if needDisappearingJoin && has3048 {
+				// 有3048，非3048的k标签 OR (3048且未过期)
+				non3048 := make([]string, 0)
+				for _, v := range kTagValues {
+					if v != "3048" {
+						non3048 = append(non3048, v)
+					}
+				}
+				orParts := make([]string, 0)
+				if len(non3048) > 0 {
+					non3048Quoted := make([]string, 0, len(non3048))
+					for _, v := range non3048 {
+						non3048Quoted = append(non3048Quoted, "'"+v+"'")
+					}
+					orParts = append(orParts, `event.tagvalues && ARRAY[`+strings.Join(non3048Quoted, ",")+`]`)
+				}
+				// 3048且未过期
+				orParts = append(orParts, `(event.tagvalues && ARRAY['3048'] AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))`)
+				kTagCondition = "(" + strings.Join(orParts, " OR ") + ")"
+			} else {
+					// 没有3048，所有k标签和其他标签一样AND
+					tagPlaceholders := make([]string, 0, len(kTagValues))
+					for _, tagValue := range kTagValues {
+							params = append(params, tagValue)
+							tagPlaceholders = append(tagPlaceholders, "?")
+					}
+					if len(tagPlaceholders) > 0 {
+							kTagCondition = `event.tagvalues && ARRAY[` + strings.Join(tagPlaceholders, ",") + "]"
+					}
+			}
 	   }
-	   // 合并k标签和其他标签
-	   if kTagCondition != "" {
-			   conditions = append(conditions, kTagCondition)
-	   }
-	   conditions = append(conditions, normalTagConditions...)
+	// 合并k标签和其他标签
+	conditions = append(conditions, normalTagConditions...)
+	if kTagCondition != "" {
+			conditions = append(conditions, kTagCondition)
+	}
 
 	if filter.Since != nil {
 		conditions = append(conditions, `event.created_at >= ?`)
