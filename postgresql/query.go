@@ -187,25 +187,65 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		conditions = append(conditions, ` event.pubkey IN (`+makePlaceHolders(len(filter.Authors))+`)`)
 	}
 
-	normalTagConditions := make([]string, 0)
-	for _, values := range filter.Tags {
-		if len(values) == 0 {
-			// any tag set to [] is wrong
-			return "", nil, EmptyTagSet
-		}
-		tagPlaceholders := make([]string, 0, len(values))
-		for _, tagValue := range values {
-			if tagValue == "3048" {
-				continue // 特殊处理的 tagValue，不用于普通过滤
-			}
-			params = append(params, tagValue)
-			tagPlaceholders = append(tagPlaceholders, "?")
-		}
-		if len(tagPlaceholders) > 0 {
-			normalTagConditions = append(normalTagConditions, `event.tagvalues && ARRAY[`+strings.Join(tagPlaceholders, ",")+`]`)
-		}
-	}
-	conditions = append(conditions, normalTagConditions...)
+	   normalTagConditions := make([]string, 0)
+	   kTagValues := []string{}
+	   for key, values := range filter.Tags {
+			   if len(values) == 0 {
+					   return "", nil, EmptyTagSet
+			   }
+			   if key == "k" {
+					   for _, tagValue := range values {
+							   kTagValues = append(kTagValues, tagValue)
+					   }
+			   } else {
+					   tagPlaceholders := make([]string, 0, len(values))
+					   for _, tagValue := range values {
+							   params = append(params, tagValue)
+							   tagPlaceholders = append(tagPlaceholders, "?")
+					   }
+					   if len(tagPlaceholders) > 0 {
+							   normalTagConditions = append(normalTagConditions, `event.tagvalues && ARRAY[`+strings.Join(tagPlaceholders, ",")+`]`)
+					   }
+			   }
+	   }
+
+	   // k标签处理逻辑
+	   kTagCondition := ""
+	   if len(kTagValues) > 0 {
+			   if has3048 {
+					   // 有3048，非3048的k标签 OR (3048且未过期)
+					   non3048 := make([]string, 0)
+					   for _, v := range kTagValues {
+							   if v != "3048" {
+									   non3048 = append(non3048, v)
+							   }
+					   }
+					   orParts := make([]string, 0)
+					   if len(non3048) > 0 {
+							   for _, v := range non3048 {
+									   orParts = append(orParts, `event.tagvalues && ARRAY['`+v+`']`)
+							   }
+					   }
+					   // 3048且未过期
+					   orParts = append(orParts, `(event.tagvalues && ARRAY['3048'] AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))`)
+					   kTagCondition = "(" + strings.Join(orParts, " OR ") + ")"
+			   } else {
+					   // 没有3048，所有k标签和其他标签一样AND
+					   tagPlaceholders := make([]string, 0, len(kTagValues))
+					   for _, tagValue := range kTagValues {
+							   params = append(params, tagValue)
+							   tagPlaceholders = append(tagPlaceholders, "?")
+					   }
+					   if len(tagPlaceholders) > 0 {
+							   kTagCondition = `event.tagvalues && ARRAY[` + strings.Join(tagPlaceholders, ",") + "]"
+					   }
+			   }
+	   }
+	   // 合并k标签和其他标签
+	   if kTagCondition != "" {
+			   conditions = append(conditions, kTagCondition)
+	   }
+	   conditions = append(conditions, normalTagConditions...)
 
 	if filter.Since != nil {
 		conditions = append(conditions, `event.created_at >= ?`)
@@ -233,23 +273,20 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		fromClause = "event LEFT JOIN moss_api.dismsg_user_status dus ON event.id = dus.event_id AND dus.user_pubkey = ?"
 	}
 
-	normalKindConditions := make([]string, 0)
-	disappearingConditions := make([]string, 0)
-	for _, kind := range filter.Kinds {
-		switch kind {
-		case 1404:
-			disappearingConditions = append(disappearingConditions,
-				"(event.kind = 1404 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
-		case 1059:
-			if has3048 {
-				disappearingConditions = append(disappearingConditions,
-					"(event.kind = 1059 AND event.tagvalues && ARRAY['3048'] AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
-			}
-			normalKindConditions = append(normalKindConditions, "event.kind = 1059")
-		default:
-			normalKindConditions = append(normalKindConditions, fmt.Sprintf("event.kind = %d", kind))
-		}
-	}
+	   normalKindConditions := make([]string, 0)
+	   disappearingConditions := make([]string, 0)
+	   for _, kind := range filter.Kinds {
+			   switch kind {
+			   case 1404:
+					   disappearingConditions = append(disappearingConditions,
+							   "(event.kind = 1404 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
+			   case 1059:
+					   // 1059的tag条件已在上面处理，这里只拼kind
+					   normalKindConditions = append(normalKindConditions, "event.kind = 1059")
+			   default:
+					   normalKindConditions = append(normalKindConditions, fmt.Sprintf("event.kind = %d", kind))
+			   }
+	   }
 
 	combinedConditions := make([]string, 0)
 	if len(normalKindConditions) > 0 {
@@ -274,14 +311,14 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	var query string
 	if doCount {
 		query = sqlx.Rebind(sqlx.BindType("postgres"), `SELECT
-          COUNT(*)
-        FROM `+fromClause+` WHERE `+
+		  COUNT(*)
+		FROM `+fromClause+` WHERE `+
 			strings.Join(allConditions, " AND ")+
 			" LIMIT ?")
 	} else {
 		query = sqlx.Rebind(sqlx.BindType("postgres"), `SELECT
-          event.id, event.pubkey, event.created_at, event.kind, event.tags, event.content, event.sig
-        FROM `+fromClause+` WHERE `+
+		  event.id, event.pubkey, event.created_at, event.kind, event.tags, event.content, event.sig
+		FROM `+fromClause+` WHERE `+
 			strings.Join(allConditions, " AND ")+
 			" ORDER BY event.created_at DESC, event.id LIMIT ?")
 	}
