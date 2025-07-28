@@ -17,6 +17,42 @@ const (
 
 var _ eventstore.Store = (*PostgresBackend)(nil)
 
+// SetDefaultLimits sets default query limits if not set
+func (b *PostgresBackend) SetDefaultLimits() {
+	if b.QueryLimit == 0 {
+		b.QueryLimit = queryLimit
+	}
+	if b.QueryIDsLimit == 0 {
+		b.QueryIDsLimit = queryIDsLimit
+	}
+	if b.QueryAuthorsLimit == 0 {
+		b.QueryAuthorsLimit = queryAuthorsLimit
+	}
+	if b.QueryKindsLimit == 0 {
+		b.QueryKindsLimit = queryKindsLimit
+	}
+	if b.QueryTagsLimit == 0 {
+		b.QueryTagsLimit = queryTagsLimit
+	}
+}
+
+// InitReadOnly initializes a read-only PostgresBackend (no DDL)
+func (b *PostgresBackend) InitReadOnly() error {
+	var err error
+	var db *sqlx.DB
+	if b.DB == nil {
+		db, err = sqlx.Connect("postgres", b.DatabaseURL)
+		if err != nil {
+			return err
+		}
+		b.DB = db
+	}
+	b.DB.SetMaxOpenConns(80)
+	b.DB.Mapper = reflectx.NewMapperFunc("json", sqlx.NameMapper)
+	b.SetDefaultLimits()
+	return nil
+}
+
 func (b *PostgresBackend) Init() error {
 	var err error
 	var db *sqlx.DB
@@ -35,10 +71,10 @@ func (b *PostgresBackend) Init() error {
 
 	_, err = b.DB.Exec(`
 CREATE OR REPLACE FUNCTION tags_to_tagvalues(jsonb) RETURNS text[]
-    AS 'SELECT array_agg(t->>1) FROM (SELECT jsonb_array_elements($1) AS t)s WHERE length(t->>0) = 1;'
-    LANGUAGE SQL
-    IMMUTABLE
-    RETURNS NULL ON NULL INPUT;
+	AS 'SELECT array_agg(t->>1) FROM (SELECT jsonb_array_elements($1) AS t)s WHERE length(t->>0) = 1;'
+	LANGUAGE SQL
+	IMMUTABLE
+	RETURNS NULL ON NULL INPUT;
 
 CREATE TABLE IF NOT EXISTS event (
   id text NOT NULL,
@@ -58,22 +94,8 @@ CREATE INDEX IF NOT EXISTS timeidx ON event (created_at DESC);
 CREATE INDEX IF NOT EXISTS kindidx ON event (kind);
 CREATE INDEX IF NOT EXISTS kindtimeidx ON event(kind,created_at DESC);
 CREATE INDEX IF NOT EXISTS arbitrarytagvalues ON event USING gin (tagvalues);
-    `)
+	`)
 
-	if b.QueryLimit == 0 {
-		b.QueryLimit = queryLimit
-	}
-	if b.QueryIDsLimit == 0 {
-		b.QueryIDsLimit = queryIDsLimit
-	}
-	if b.QueryAuthorsLimit == 0 {
-		b.QueryAuthorsLimit = queryAuthorsLimit
-	}
-	if b.QueryKindsLimit == 0 {
-		b.QueryKindsLimit = queryKindsLimit
-	}
-	if b.QueryTagsLimit == 0 {
-		b.QueryTagsLimit = queryTagsLimit
-	}
+	b.SetDefaultLimits()
 	return err
 }
