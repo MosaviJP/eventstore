@@ -8,7 +8,8 @@ import (
 )
 
 type RelayWrapper struct {
-	Store
+	Store      // writer
+	ReaderStore Store // reader，可为 nil
 }
 
 var _ nostr.RelayStore = (*RelayWrapper)(nil)
@@ -37,7 +38,11 @@ func (w RelayWrapper) Publish(ctx context.Context, evt nostr.Event) error {
 }
 
 func (w RelayWrapper) QuerySync(ctx context.Context, filter nostr.Filter) ([]*nostr.Event, error) {
-	ch, err := w.Store.QueryEvents(ctx, filter)
+	store := w.ReaderStore
+	if store == nil {
+		store = w.Store
+	}
+	ch, err := store.QueryEvents(ctx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query: %w", err)
 	}
