@@ -17,13 +17,11 @@ require (
 	github.com/fergusstrange/embedded-postgres v1.28.0
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/jmoiron/sqlx v1.4.0
-	github.com/kr/pretty v0.3.1
 	github.com/lib/pq v1.10.9
 	github.com/mailru/easyjson v0.9.0
 	github.com/mattn/go-sqlite3 v1.14.24
 	github.com/nbd-wtf/go-nostr v0.51.8
 	github.com/opensearch-project/opensearch-go/v4 v4.3.0
-	github.com/rs/zerolog v1.33.0
 	github.com/stretchr/testify v1.10.0
 	github.com/urfave/cli/v3 v3.0.0-beta1
 	go.mongodb.org/mongo-driver/v2 v2.0.0-beta2
@@ -86,9 +84,7 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
-	github.com/kr/text v0.2.0 // indirect
-	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/kr/pretty v0.3.1 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/mschoch/smat v0.2.0 // indirect
