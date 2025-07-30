@@ -17,7 +17,7 @@ func (b *PostgresBackend) SaveEvent(ctx context.Context, evt *nostr.Event) error
 	} else {
 		fmt.Printf("SaveEvent: context has no deadline\n")
 	}
-	fmt.Printf("SaveEvent: context canceled before SQL? %v\n", ctx.Err())
+	fmt.Printf("SaveEvent: ctx canceled before SQL? %v\n", ctx.Err())
 	sql, params, _ := saveEventSql(evt)
 	paramsJson, _ := json.Marshal(params)
 	fmt.Printf("SaveEvent: params: %s\n", string(paramsJson))
