@@ -12,13 +12,13 @@ func (b *PostgresBackend) SaveEvent(ctx context.Context, evt *nostr.Event) error
 	sql, params, _ := saveEventSql(evt)
 	res, err := b.DB.ExecContext(ctx, sql, params...)
 	if err != nil {
-		println("SaveEvent: failed to execute SQL:", err)
+		println("SaveEvent: failed to execute SQL:", err.Error())
 		return err
 	}
 
 	nr, err := res.RowsAffected()
 	if err != nil {
-		println("SaveEvent: failed to get rows affected:", err)
+		println("SaveEvent: failed to get rows affected:", err.Error())
 		return err
 	}
 
