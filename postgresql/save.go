@@ -3,22 +3,33 @@ package postgresql
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/MosaviJP/eventstore"
 	"github.com/nbd-wtf/go-nostr"
 )
 
 func (b *PostgresBackend) SaveEvent(ctx context.Context, evt *nostr.Event) error {
+	deadline, hasDeadline := ctx.Deadline()
+	fmt.Printf("SaveEvent: event id: %s\n", evt.ID)
+	if hasDeadline {
+		fmt.Printf("SaveEvent: context deadline: %s\n", deadline.String())
+	} else {
+		fmt.Printf("SaveEvent: context has no deadline\n")
+	}
+	fmt.Printf("SaveEvent: context canceled before SQL? %v\n", ctx.Err())
 	sql, params, _ := saveEventSql(evt)
+	paramsJson, _ := json.Marshal(params)
+	fmt.Printf("SaveEvent: params: %s\n", string(paramsJson))
 	res, err := b.DB.ExecContext(ctx, sql, params...)
 	if err != nil {
-		println("SaveEvent: failed to execute SQL:", err.Error())
+		fmt.Printf("SaveEvent: failed to execute SQL: %v, ctx.Err: %v\n", err, ctx.Err())
 		return err
 	}
 
 	nr, err := res.RowsAffected()
 	if err != nil {
-		println("SaveEvent: failed to get rows affected:", err.Error())
+		fmt.Printf("SaveEvent: failed to get rows affected: %v\n", err)
 		return err
 	}
 
@@ -26,6 +37,7 @@ func (b *PostgresBackend) SaveEvent(ctx context.Context, evt *nostr.Event) error
 		return eventstore.ErrDupEvent
 	}
 
+	fmt.Printf("SaveEvent: event saved successfully, rows: %d\n", nr)
 	return nil
 }
 
