@@ -28,6 +28,11 @@ func (b *PostgresBackend) QueryEvents(ctx context.Context, filter nostr.Filter) 
 	log.Printf("Executing SQL Query: %s", formatSQLWithParams(query, params))
 	// log.Printf("filters: Kinds=%v, tags=%v", filter.Kinds, filter.Tags)
 
+	if ctx == nil {
+		fmt.Printf("QueryEvents: context is nil for filter: %v\n", filter)
+	} else if ctx.Err() != nil {
+		fmt.Printf("QueryEvents: context error: %v for filter: %v\n", ctx.Err(), filter)
+	}
 	rows, err := b.DB.QueryContext(ctx, query, params...)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("failed to fetch events using query %q: %w", query, err)

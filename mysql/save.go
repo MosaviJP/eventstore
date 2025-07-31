@@ -32,6 +32,15 @@ func (b *MySQLBackend) SaveEvent(ctx context.Context, evt *nostr.Event) error {
 	return nil
 }
 
+func (b *MySQLBackend) SaveEvents(ctx context.Context, events []*nostr.Event) error {
+    for _, evt := range events {
+        if err := b.SaveEvent(ctx, evt); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+
 func deleteBeforeSaveSql(evt *nostr.Event) (string, []any, bool) {
 	// react to different kinds of events
 	var (

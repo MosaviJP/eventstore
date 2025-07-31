@@ -30,3 +30,12 @@ func (b *SQLite3Backend) SaveEvent(ctx context.Context, evt *nostr.Event) error 
 
 	return nil
 }
+
+func (b *SQLite3Backend) SaveEvents(ctx context.Context, events []*nostr.Event) error {
+    for _, evt := range events {
+        if err := b.SaveEvent(ctx, evt); err != nil {
+            return err
+        }
+    }
+    return nil
+}

@@ -31,6 +31,10 @@ func (b NullStore) SaveEvent(ctx context.Context, evt *nostr.Event) error {
 	return nil
 }
 
+func (b NullStore) SaveEvents(ctx context.Context, events []*nostr.Event) error {
+    return nil
+}
+
 func (b NullStore) ReplaceEvent(ctx context.Context, evt *nostr.Event) error {
 	return nil
 }

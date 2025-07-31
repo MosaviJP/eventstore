@@ -22,6 +22,11 @@ type Store interface {
 	DeleteEvent(context.Context, *nostr.Event) error
 	// SaveEvent just saves an event, no side-effects.
 	SaveEvent(context.Context, *nostr.Event) error
+
+	// SaveEvents saves multiple events, no side-effects.
+	// It should be used for bulk inserts.
+	// and its optionally implemented by the store.
+	SaveEvents(context.Context, []*nostr.Event) error
 	// ReplaceEvent atomically replaces a replaceable or addressable event.
 	// Conceptually it is like a Query->Delete->Save, but streamlined.
 	ReplaceEvent(context.Context, *nostr.Event) error

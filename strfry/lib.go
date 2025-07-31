@@ -97,6 +97,15 @@ func (s StrfryBackend) SaveEvent(ctx context.Context, evt *nostr.Event) error {
 	return nil
 }
 
+func (b *StrfryBackend) SaveEvents(ctx context.Context, events []*nostr.Event) error {
+    for _, evt := range events {
+        if err := b.SaveEvent(ctx, evt); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+
 func (s StrfryBackend) DeleteEvent(ctx context.Context, evt *nostr.Event) error {
 	args := make([]string, 0, 3)
 	if s.ConfigPath != "" {

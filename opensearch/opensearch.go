@@ -243,3 +243,12 @@ func (oss *OpensearchStorage) SaveEvent(ctx context.Context, evt *nostr.Event) e
 	err = <-done
 	return err
 }
+
+func (b *OpensearchStorage) SaveEvents(ctx context.Context, events []*nostr.Event) error {
+    for _, evt := range events {
+        if err := b.SaveEvent(ctx, evt); err != nil {
+            return err
+        }
+    }
+    return nil
+}

@@ -97,6 +97,16 @@ func (b *SliceStore) SaveEvent(ctx context.Context, evt *nostr.Event) error {
 	return nil
 }
 
+func (b *SliceStore) SaveEvents(ctx context.Context, events []*nostr.Event) error {
+    // 可以简单循环调用 SaveEvent，或者直接 return nil
+    for _, evt := range events {
+        if err := b.SaveEvent(ctx, evt); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+
 func (b *SliceStore) DeleteEvent(ctx context.Context, evt *nostr.Event) error {
 	idx, found := slices.BinarySearchFunc(b.internal, evt, eventComparator)
 	if !found {

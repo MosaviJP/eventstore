@@ -26,13 +26,27 @@ func (w RelayWrapper) Publish(ctx context.Context, evt nostr.Event) error {
 	if nostr.IsRegularKind(evt.Kind) {
 		// regular events are just saved directly
 		if err := w.SaveEvent(ctx, &evt); err != nil && err != ErrDupEvent {
-			return fmt.Errorf("failed to save: %w", err)
+			return fmt.Errorf("Publish: failed to save: %w", err)
 		}
 		return nil
 	}
 
 	// others are replaced
 	w.Store.ReplaceEvent(ctx, &evt)
+
+	return nil
+}
+
+func (w RelayWrapper) PublishServal(ctx context.Context, events []*nostr.Event) error {
+	var othersEvents []*nostr.Event
+
+	if len(othersEvents) == 0 {
+		return nil
+	}
+	
+	if err := w.SaveEvents(ctx, events); err != nil {
+		return fmt.Errorf("PublishServal: failed to save events: %w", err)
+	}
 
 	return nil
 }
