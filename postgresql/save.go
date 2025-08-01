@@ -21,8 +21,9 @@ func (b *PostgresBackend) SaveEvent(ctx context.Context, evt *nostr.Event) error
 	fmt.Printf("SaveEvent: ctx canceled before SQL? %v\n", ctx.Err())
 	sql, params, _ := saveEventSql(evt)
 	paramsJson, _ := json.Marshal(params)
+	tmpCtx := context.Background()
 	fmt.Printf("SaveEvent: params: %s\n", string(paramsJson))
-	res, err := b.DB.ExecContext(ctx, sql, params...)
+	res, err := b.DB.ExecContext(tmpCtx, sql, params...)
 	if err != nil {
 		fmt.Printf("SaveEvent: failed to execute SQL: %v, ctx.Err: %v\n", err, ctx.Err())
 		return err
