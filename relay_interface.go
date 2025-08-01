@@ -38,9 +38,8 @@ func (w RelayWrapper) Publish(ctx context.Context, evt nostr.Event) error {
 }
 
 func (w RelayWrapper) PublishServal(ctx context.Context, events []*nostr.Event) error {
-	var othersEvents []*nostr.Event
 
-	if len(othersEvents) == 0 {
+	if len(events) == 0 {
 		return nil
 	}
 	
