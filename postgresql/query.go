@@ -59,6 +59,7 @@ func (b *PostgresBackend) QueryEvents(ctx context.Context, filter nostr.Filter) 
 		}
 	}()
 
+	fmt.Printf("RO-DB has %d connections\n", b.DB.Stats().OpenConnections)
 	return ch, nil
 }
 
