@@ -11,17 +11,8 @@ import (
 )
 
 func (b *PostgresBackend) SaveEvent(ctx context.Context, evt *nostr.Event) error {
-	deadline, hasDeadline := ctx.Deadline()
-	fmt.Printf("SaveEvent: event id: %s\n", evt.ID)
-	if hasDeadline {
-		fmt.Printf("SaveEvent: context deadline: %s\n", deadline.String())
-	} else {
-		fmt.Printf("SaveEvent: context has no deadline\n")
-	}
-	fmt.Printf("SaveEvent: ctx canceled before SQL? %v\n", ctx.Err())
+	// exec := b.DB.ExecContext
 	sql, params, _ := saveEventSql(evt)
-	paramsJson, _ := json.Marshal(params)
-	fmt.Printf("SaveEvent: params: %s\n", string(paramsJson))
 	res, err := b.DB.ExecContext(ctx, sql, params...)
 	if err != nil {
 		fmt.Printf("SaveEvent: failed to execute SQL: %v, ctx.Err: %v\n", err, ctx.Err())
@@ -38,7 +29,7 @@ func (b *PostgresBackend) SaveEvent(ctx context.Context, evt *nostr.Event) error
 		return eventstore.ErrDupEvent
 	}
 
-	fmt.Printf("SaveEvent: event saved successfully, rows: %d\n", nr)
+	fmt.Printf("SaveEvent: event saved successfully, rows: %d, and DB has %d connections\n", nr, b.DB.Stats().OpenConnections)
 	return nil
 }
 
