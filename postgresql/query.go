@@ -268,6 +268,17 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		params = append(params, `%`+strings.ReplaceAll(filter.Search, `%`, `\%`)+`%`)
 	}
 
+	// 过滤已过期的事件（expiration标签）
+	// 只选择没有expiration标签，或者expiration标签值大于当前时间戳的事件
+	conditions = append(conditions, `(
+		NOT EXISTS (
+			SELECT 1 FROM jsonb_array_elements(event.tags) AS tag_elem
+			WHERE jsonb_array_length(tag_elem) >= 2 
+			AND tag_elem->>0 = 'expiration'
+			AND (tag_elem->>1)::bigint <= EXTRACT(EPOCH FROM NOW())
+		)
+	)`)
+
 	if len(conditions) == 0 {
 		// fallback
 		conditions = append(conditions, `true`)
