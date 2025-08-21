@@ -16,3 +16,16 @@ func (m *MongoDBBackend) SaveEvent(ctx context.Context, event *nostr.Event) erro
 	}
 	return err
 }
+
+func (m *MongoDBBackend) SaveEvents(ctx context.Context, events []*nostr.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	for _, evt := range events {
+		if err := m.SaveEvent(ctx, evt); err != nil && err != eventstore.ErrDupEvent {
+			return err
+		}
+	}
+	return nil
+}

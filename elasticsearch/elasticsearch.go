@@ -222,3 +222,16 @@ func (ess *ElasticsearchStorage) SaveEvent(ctx context.Context, evt *nostr.Event
 	err = <-done
 	return err
 }
+
+func (ess *ElasticsearchStorage) SaveEvents(ctx context.Context, events []*nostr.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	for _, evt := range events {
+		if err := ess.SaveEvent(ctx, evt); err != nil && err != eventstore.ErrDupEvent {
+			return err
+		}
+	}
+	return nil
+}

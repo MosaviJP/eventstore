@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/MosaviJP/eventstore"
 	"github.com/edgedb/edgedb-go"
 	"github.com/nbd-wtf/go-nostr"
 )
@@ -28,4 +29,17 @@ func (b *EdgeDBBackend) SaveEvent(ctx context.Context, event *nostr.Event) error
 		"sig":       event.Sig,
 	}
 	return b.Client.QuerySingle(ctx, query, &Event{}, args)
+}
+
+func (b *EdgeDBBackend) SaveEvents(ctx context.Context, events []*nostr.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	for _, evt := range events {
+		if err := b.SaveEvent(ctx, evt); err != nil && err != eventstore.ErrDupEvent {
+			return err
+		}
+	}
+	return nil
 }

@@ -4,33 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/MosaviJP/eventstore"
-	"github.com/MosaviJP/eventstore/internal"
+	"github.com/jmoiron/sqlx"
 	"github.com/nbd-wtf/go-nostr"
 )
 
 func (b *PostgresBackend) SaveEvent(ctx context.Context, evt *nostr.Event) error {
-	// exec := b.DB.ExecContext
-	sql, params, _ := saveEventSql(evt)
-	res, err := b.DB.ExecContext(ctx, sql, params...)
-	if err != nil {
-		fmt.Printf("SaveEvent: failed to execute SQL: %v, ctx.Err: %v\n", err, ctx.Err())
-		return err
-	}
-
-	nr, err := res.RowsAffected()
-	if err != nil {
-		fmt.Printf("SaveEvent: failed to get rows affected: %v\n", err)
-		return err
-	}
-
-	if nr == 0 {
-		return eventstore.ErrDupEvent
-	}
-
-	fmt.Printf("SaveEvent: event saved successfully, rows: %d, and DB has %d connections\n", nr, b.DB.Stats().OpenConnections)
-	return nil
+	// 薄包装调用 SaveEvents
+	return b.SaveEvents(ctx, []*nostr.Event{evt})
 }
 
 // func that saves a list of events into DB as a transaction, if event is a replace event, it will be replaced
@@ -38,70 +21,111 @@ func (b *PostgresBackend) SaveEvents(ctx context.Context, events []*nostr.Event)
 	if len(events) == 0 {
 		return nil
 	}
-	tx, err := b.DB.BeginTx(ctx, nil)
-	fmt.Printf("TX: SaveEvents: starting transaction for %d events\n", len(events))
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	for _, evt := range events {
-		if nostr.IsReplaceableKind(evt.Kind) {
-			filter := nostr.Filter{Limit: 1, Kinds: []int{evt.Kind}, Authors: []string{evt.PubKey}}
-			if nostr.IsAddressableKind(evt.Kind) {
-				filter.Tags = nostr.TagMap{"d": []string{evt.Tags.GetD()}}
-			}
-			ch, err := b.QueryEvents(ctx, filter)
-			if err != nil {
-				tx.Rollback()
-				return fmt.Errorf("failed to query before replacing: %w", err)
-			}
 
+	// 读取 tx：从 ctx 获取事务，如果没有则使用 DB
+	tx, ok := eventstore.TxFrom(ctx)
+	var exec sqlx.ExtContext = b.DB
+	var needCommit bool
+
+	if ok {
+		// 使用外部传入的事务
+		exec = tx
+		needCommit = false
+	} else {
+		// 创建新事务
+		newTx, err := b.DB.BeginTxx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("failed to begin transaction: %w", err)
+		}
+		tx = newTx
+		exec = tx
+		needCommit = true
+		defer func() {
+			if needCommit {
+				tx.Rollback() // 确保在错误情况下回滚
+			}
+		}()
+	}
+
+	fmt.Printf("TX: SaveEvents: starting transaction for %d events\n", len(events))
+
+	for _, evt := range events {
+		if nostr.IsReplaceableKind(evt.Kind) || nostr.IsAddressableKind(evt.Kind) {
 			shouldStore := true
-			for previous := range ch {
-				if internal.IsOlder(previous, evt) {
-					if _, err := tx.ExecContext(ctx, `DELETE FROM event WHERE id = $1`, previous.ID); err != nil {
-						tx.Rollback()
+			var prevCreatedAt nostr.Timestamp
+
+			query := `SELECT id, created_at FROM event WHERE pubkey=$1 AND kind=$2`
+			args := []interface{}{evt.PubKey, evt.Kind}
+
+			if nostr.IsAddressableKind(evt.Kind) {
+				// 可寻址事件需要额外的 d 标签条件
+				dTag := evt.Tags.GetD()
+				query += ` AND tags->>'d'=$3`
+				args = append(args, dTag)
+			}
+			query += ` ORDER BY created_at DESC, id DESC LIMIT 1`
+
+			var prevID string
+			row := tx.QueryRowxContext(ctx, query, args...)
+			err := row.Scan(&prevID, &prevCreatedAt)
+			if err == nil {
+				// 找到了之前的事件，比较时间戳
+				if prevCreatedAt >= evt.CreatedAt {
+					fmt.Printf("SaveEvents: event %s is older than existing, skipping\n", evt.ID)
+					shouldStore = false
+				} else {
+					// 删除旧事件
+					if _, err := exec.ExecContext(ctx, `DELETE FROM event WHERE id = $1`, prevID); err != nil {
+						if needCommit {
+							tx.Rollback()
+						}
 						return fmt.Errorf("failed to delete event for replacing: %w", err)
 					}
-				} else {
-					shouldStore = false
+					fmt.Printf("SaveEvents: deleted older event %s for replacement\n", prevID)
 				}
 			}
+			// 如果 err != nil，说明没有找到之前的事件，继续插入
 
 			if !shouldStore {
-				fmt.Printf("SaveEvents: event %s is older than existing, skipping\n", evt.ID)
 				continue
 			}
 		}
 
 		sql, params, _ := saveEventSql(evt)
-		paramsJson, err := json.Marshal(params)
-		if err == nil {
-			fmt.Printf("SaveEvents: params: %s in tx: %p\n", string(paramsJson), tx)
-		}
-		res, err := tx.ExecContext(ctx, sql, params...)
+		res, err := exec.ExecContext(ctx, sql, params...)
 		if err != nil {
 			fmt.Printf("SaveEvents: failed to execute SQL: %v, ctx.Err: %v\n", err, ctx.Err())
-			tx.Rollback()
+			if needCommit {
+				tx.Rollback()
+			}
 			return fmt.Errorf("failed to execute SQL: %w", err)
 		}
+
 		nr, err := res.RowsAffected()
 		if err != nil {
-			tx.Rollback()
+			if needCommit {
+				tx.Rollback()
+			}
 			return fmt.Errorf("failed to get rows affected: %w", err)
 		}
+
 		if nr == 0 {
 			fmt.Printf("SaveEvents: event %s was not inserted (maybe duplicate), continuing\n", evt.ID)
-			continue // 而不是 return
+			continue
 		}
-		fmt.Printf("SaveEvents: event %s saved successfully, rows: %d\n",
-			evt.ID, nr)
+
+		fmt.Printf("SaveEvents: event %s saved successfully, rows: %d\n", evt.ID, nr)
 	}
-	if err := tx.Commit(); err != nil {
-		fmt.Printf("SaveEvents: failed to commit transaction: %v\n", err)
-		tx.Rollback()
-		return fmt.Errorf("failed to commit transaction: %w", err)
+
+	// 只有在我们创建了事务的情况下才提交
+	if needCommit {
+		if err := tx.Commit(); err != nil {
+			fmt.Printf("SaveEvents: failed to commit transaction: %v\n", err)
+			return fmt.Errorf("failed to commit transaction: %w", err)
+		}
+		fmt.Printf("SaveEvents: all %d events saved successfully\n", len(events))
 	}
-	fmt.Printf("SaveEvents: all %d events saved successfully\n", len(events))
+
 	return nil
 }
 func (b *PostgresBackend) BeforeSave(ctx context.Context, evt *nostr.Event) {
@@ -131,4 +155,88 @@ func saveEventSql(evt *nostr.Event) (string, []any, error) {
 	)
 
 	return query, params, nil
+}
+
+// UpsertDisappearing 插入或更新消失消息记录
+func (b *PostgresBackend) UpsertDisappearing(
+	ctx context.Context,
+	eventID string, ttlSeconds int64, expiration time.Time, createdAt time.Time,
+) error {
+	// 同样用 tx := TxFrom(ctx) 决定 exec，在同一事务里执行
+	tx, ok := eventstore.TxFrom(ctx)
+	var exec sqlx.ExtContext = b.DB
+	var needCommit bool
+
+	if ok {
+		// 使用外部传入的事务
+		exec = tx
+		needCommit = false
+	} else {
+		// 创建新事务
+		newTx, err := b.DB.BeginTxx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("failed to begin transaction: %w", err)
+		}
+		tx = newTx
+		exec = tx
+		needCommit = true
+		defer func() {
+			if needCommit {
+				tx.Rollback()
+			}
+		}()
+	}
+
+	query := `INSERT INTO moss_api.dismsg_messages(event_id, ttl_seconds, expiration, created_at)
+VALUES ($1,$2,$3,$4)
+ON CONFLICT (event_id) DO UPDATE
+  SET ttl_seconds=EXCLUDED.ttl_seconds,
+      expiration=EXCLUDED.expiration,
+      created_at=EXCLUDED.created_at`
+
+	_, err := exec.ExecContext(ctx, query, eventID, ttlSeconds, expiration, createdAt)
+	if err != nil {
+		if needCommit {
+			tx.Rollback()
+		}
+		return fmt.Errorf("failed to upsert disappearing message: %w", err)
+	}
+
+	if needCommit {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit disappearing transaction: %w", err)
+		}
+	}
+
+	fmt.Printf("UpsertDisappearing: event %s upserted successfully\n", eventID)
+	return nil
+}
+
+// EnsureDisappearingSchema 确保消失消息的 schema 和表存在
+func (b *PostgresBackend) EnsureDisappearingSchema() error {
+	query := `
+	CREATE SCHEMA IF NOT EXISTS moss_api;
+	
+	CREATE TABLE IF NOT EXISTS moss_api.dismsg_messages (
+		id int8 GENERATED BY DEFAULT AS IDENTITY( INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START 1 CACHE 1 NO CYCLE) NOT NULL,
+		event_id varchar NOT NULL,
+		ttl_seconds int8 NOT NULL,
+		expiration timestamptz NOT NULL,
+		created_at timestamptz NOT NULL,
+		CONSTRAINT dismsg_messages_pkey PRIMARY KEY (id)
+	);
+	
+	-- 创建索引（与现有表结构一致）
+	CREATE INDEX IF NOT EXISTS disappearingmessage_created_at ON moss_api.dismsg_messages USING btree (created_at);
+	CREATE INDEX IF NOT EXISTS disappearingmessage_event_id ON moss_api.dismsg_messages USING btree (event_id);
+	CREATE INDEX IF NOT EXISTS disappearingmessage_expiration ON moss_api.dismsg_messages USING btree (expiration);
+	CREATE UNIQUE INDEX IF NOT EXISTS dismsg_messages_event_id_key ON moss_api.dismsg_messages USING btree (event_id);
+	`
+	
+	if _, err := b.DB.Exec(query); err != nil {
+		return fmt.Errorf("failed to create schema and table: %w", err)
+	}
+
+	fmt.Println("EnsureDisappearingSchema: schema and table created successfully")
+	return nil
 }

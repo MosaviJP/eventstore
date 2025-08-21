@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/MosaviJP/eventstore"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -46,4 +47,17 @@ func (d *DynamoDBBackend) SaveEvent(ctx context.Context, event *nostr.Event) err
 		return err
 	}
 	return err
+}
+
+func (d *DynamoDBBackend) SaveEvents(ctx context.Context, events []*nostr.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	for _, evt := range events {
+		if err := d.SaveEvent(ctx, evt); err != nil && err != eventstore.ErrDupEvent {
+			return err
+		}
+	}
+	return nil
 }

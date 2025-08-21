@@ -69,3 +69,16 @@ func (b *LMDBBackend) save(txn *lmdb.Txn, evt *nostr.Event) error {
 
 	return nil
 }
+
+func (b *LMDBBackend) SaveEvents(ctx context.Context, events []*nostr.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	for _, evt := range events {
+		if err := b.SaveEvent(ctx, evt); err != nil && err != eventstore.ErrDupEvent {
+			return err
+		}
+	}
+	return nil
+}

@@ -96,6 +96,16 @@ CREATE INDEX IF NOT EXISTS kindtimeidx ON event(kind,created_at DESC);
 CREATE INDEX IF NOT EXISTS arbitrarytagvalues ON event USING gin (tagvalues);
 	`)
 
+	if err != nil {
+		return err
+	}
+
+	// Initialize disappearing messages schema
+	err = b.EnsureDisappearingSchema()
+	if err != nil {
+		return err
+	}
+
 	b.SetDefaultLimits()
-	return err
+	return nil
 }
