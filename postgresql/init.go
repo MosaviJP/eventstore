@@ -1,6 +1,10 @@
 package postgresql
 
 import (
+	"os"
+	"strconv"
+	"time"
+
 	"github.com/MosaviJP/eventstore"
 	"github.com/jmoiron/sqlx"
 	"github.com/jmoiron/sqlx/reflectx"
@@ -47,7 +51,28 @@ func (b *PostgresBackend) InitReadOnly() error {
 		}
 		b.DB = db
 	}
-	b.DB.SetMaxOpenConns(80)
+	// 连接池参数改为可配置，默认更保守，减少等待膨胀
+	maxOpen := 40
+	maxIdle := 20
+	idleSec := 120
+	if v := os.Getenv("RELAY_DB_MAX_OPEN_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxOpen = n
+		}
+	}
+	if v := os.Getenv("RELAY_DB_MAX_IDLE_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			maxIdle = n
+		}
+	}
+	if v := os.Getenv("RELAY_DB_CONN_MAX_IDLE_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			idleSec = n
+		}
+	}
+	b.DB.SetMaxOpenConns(maxOpen)
+	b.DB.SetMaxIdleConns(maxIdle)
+	b.DB.SetConnMaxIdleTime(time.Duration(idleSec) * time.Second)
 	b.DB.Mapper = reflectx.NewMapperFunc("json", sqlx.NameMapper)
 	b.SetDefaultLimits()
 	return nil
@@ -64,8 +89,28 @@ func (b *PostgresBackend) Init() error {
 		}
 		b.DB = db
 	}
-	// sqlx default is 0 (unlimited), while postgresql by default accepts up to 100 connections
-	b.DB.SetMaxOpenConns(80)
+	// 连接池参数改为可配置，默认更保守
+	maxOpen := 40
+	maxIdle := 20
+	idleSec := 120
+	if v := os.Getenv("RELAY_DB_MAX_OPEN_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxOpen = n
+		}
+	}
+	if v := os.Getenv("RELAY_DB_MAX_IDLE_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			maxIdle = n
+		}
+	}
+	if v := os.Getenv("RELAY_DB_CONN_MAX_IDLE_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			idleSec = n
+		}
+	}
+	b.DB.SetMaxOpenConns(maxOpen)
+	b.DB.SetMaxIdleConns(maxIdle)
+	b.DB.SetConnMaxIdleTime(time.Duration(idleSec) * time.Second)
 
 	b.DB.Mapper = reflectx.NewMapperFunc("json", sqlx.NameMapper)
 
