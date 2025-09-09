@@ -58,9 +58,15 @@ func (b *PostgresBackend) SaveEvents(ctx context.Context, events []*nostr.Event)
 			args := []interface{}{evt.PubKey, evt.Kind}
 
 			if nostr.IsAddressableKind(evt.Kind) {
-				// 可寻址事件需要额外的 d 标签条件
+				// 可寻址事件需要额外的 d 标签条件（NIP-33）
+				// 在 jsonb 数组 [["k","v"], ...] 中精确匹配键为 'd' 且值等于给定 dTag 的项
 				dTag := evt.Tags.GetD()
-				query += ` AND tags->>'d'=$3`
+				query += ` AND EXISTS (
+					SELECT 1 FROM jsonb_array_elements(tags) AS tag_elem
+					WHERE jsonb_array_length(tag_elem) >= 2
+					  AND tag_elem->>0 = 'd'
+					  AND tag_elem->>1 = $3
+				)`
 				args = append(args, dTag)
 			}
 			query += ` ORDER BY created_at DESC, id DESC LIMIT 1`
