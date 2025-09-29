@@ -288,8 +288,12 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	   for _, kind := range filter.Kinds {
 			   switch kind {
 			   case 1404:
+					if needDisappearingJoin {
 					   disappearingConditions = append(disappearingConditions,
 							   "(event.kind = 1404 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
+					} else {
+						normalKindConditions = append(normalKindConditions, "event.kind = 1404")
+					}
 			   case 1059:
 					   // 1059的tag条件已在上面处理，这里只拼kind
 					   normalKindConditions = append(normalKindConditions, "event.kind = 1059")
