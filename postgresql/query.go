@@ -142,11 +142,11 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		}
 	}
 
-	// 精细判断是否需要联表：仅当存在 kind==1404，或 kind==1059 且 tagValue 包含3048
+	// 精细判断是否需要联表：仅当存在 kind==1404/1405，或 kind==1059 且 tagValue 包含3048
 	needDisappearingJoin := false
 	if !doCount && userPubkey != "" && len(filter.Kinds) > 0 {
 		for _, kind := range filter.Kinds {
-			if kind == 1404 || (kind == 1059 && has3048) {
+			if kind == 1404 || kind == 1405 || (kind == 1059 && has3048) {
 				// 检查表是否存在
 				var exists bool
 				err := b.DB.QueryRow(`
@@ -299,6 +299,9 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 			   case 1404:
 					   disappearingConditions = append(disappearingConditions,
 							   "(event.kind = 1404 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
+			   case 1405:
+					   disappearingConditions = append(disappearingConditions,
+							   "(event.kind = 1405 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
 			   case 1059:
 					   // 1059的tag条件已在上面处理，这里只拼kind
 					   normalKindConditions = append(normalKindConditions, "event.kind = 1059")
