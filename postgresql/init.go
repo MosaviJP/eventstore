@@ -151,6 +151,10 @@ CREATE INDEX IF NOT EXISTS arbitrarytagvalues ON event USING gin (tagvalues);
 		return err
 	}
 
+	if err := b.EnsureGroupCurrentMembers(); err != nil {
+		return err
+	}
+
 	b.SetDefaultLimits()
 	return nil
 }
