@@ -142,23 +142,29 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		}
 	}
 
-	// 精细判断是否需要联表：仅当存在 kind==1404/1405，或 kind==1059 且 tagValue 包含3048
+	// 精细判断是否需要联表：存在 kind==1404/1405，或 kind==1059 且 tagValue 包含3048，都必须联表
 	needDisappearingJoin := false
-	if !doCount && userPubkey != "" && len(filter.Kinds) > 0 {
+	if len(filter.Kinds) > 0 {
 		for _, kind := range filter.Kinds {
 			if kind == 1404 || kind == 1405 || (kind == 1059 && has3048) {
-				// 检查表是否存在
+				if userPubkey == "" {
+					return "", nil, fmt.Errorf("user pubkey required for kinds 1404/1405 (or 1059 with k=3048)")
+				}
+
 				var exists bool
-				err := b.DB.QueryRow(`
+				if err := b.DB.QueryRow(`
 					SELECT EXISTS (
 						SELECT FROM information_schema.tables 
 						WHERE table_schema = 'moss_api' 
 						AND table_name = 'dismsg_user_status'
-					)`).Scan(&exists)
-				
-				if err == nil && exists {
-					needDisappearingJoin = true
+					)`).Scan(&exists); err != nil {
+					return "", nil, fmt.Errorf("failed to check moss_api.dismsg_user_status existence: %w", err)
 				}
+				if !exists {
+					return "", nil, fmt.Errorf("table moss_api.dismsg_user_status not found; required for kinds 1404/1405")
+				}
+
+				needDisappearingJoin = true
 				break
 			}
 		}
