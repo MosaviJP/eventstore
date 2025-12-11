@@ -18,7 +18,7 @@ func (b *PostgresBackend) QueryEvents(ctx context.Context, filter nostr.Filter) 
 	if pubkey, ok := ctx.Value("userPubkey").(string); ok {
 		userPubkey = pubkey
 	}
-	
+
 	query, params, err := b.queryEventsSql(filter, false, userPubkey)
 	if err != nil {
 		return nil, err
@@ -89,7 +89,7 @@ func formatSQLWithParams(query string, params []any) string {
 	for i, param := range params {
 		placeholder := "$" + fmt.Sprintf("%d", i+1)
 		var valueStr string
-		
+
 		switch v := param.(type) {
 		case string:
 			valueStr = fmt.Sprintf("'%s'", strings.ReplaceAll(v, "'", "''"))
@@ -110,7 +110,7 @@ func formatSQLWithParams(query string, params []any) string {
 		default:
 			valueStr = fmt.Sprintf("'%v'", v)
 		}
-		
+
 		result = strings.Replace(result, placeholder, valueStr, 1)
 	}
 	return result
@@ -128,27 +128,30 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	conditions := make([]string, 0, 7)
 	params := make([]any, 0, 20)
 
-	// 判断 tagValue 中是否包含 "3048"
-	has3048 := false
-	for _, values := range filter.Tags {
-		for _, tagValue := range values {
-			if tagValue == "3048" {
-				has3048 = true
+	disappearingKSet := map[string]struct{}{
+		"3048": {},
+		"3049": {},
+		"3050": {},
+	}
+
+	// 判断 k 标签中是否包含阅后即焚标识
+	hasDisappearingK := false
+	if kValues, ok := filter.Tags["k"]; ok {
+		for _, tagValue := range kValues {
+			if _, exists := disappearingKSet[tagValue]; exists {
+				hasDisappearingK = true
 				break
 			}
 		}
-		if has3048 {
-			break
-		}
 	}
 
-	// 精细判断是否需要联表：存在 kind==1404/1405，或 kind==1059 且 tagValue 包含3048，都必须联表
+	// 精细判断是否需要联表：存在 kind==106/1404/1405，或 kind==1059 且 k 标签包含阅后即焚标识，都必须联表
 	needDisappearingJoin := false
 	if len(filter.Kinds) > 0 {
 		for _, kind := range filter.Kinds {
-			if kind == 1404 || kind == 1405 || (kind == 1059 && has3048) {
+			if kind == 106 || kind == 1404 || kind == 1405 || (kind == 1059 && hasDisappearingK) {
 				if userPubkey == "" {
-					return "", nil, fmt.Errorf("user pubkey required for kinds 1404/1405 (or 1059 with k=3048)")
+					return "", nil, fmt.Errorf("user pubkey required for kinds 106/1404/1405 (or 1059 with k=3048/3049/3050)")
 				}
 
 				var exists bool
@@ -156,12 +159,12 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 					SELECT EXISTS (
 						SELECT FROM information_schema.tables 
 						WHERE table_schema = 'moss_api' 
-						AND table_name = 'dismsg_user_status'
+					AND table_name = 'dismsg_user_status'
 					)`).Scan(&exists); err != nil {
 					return "", nil, fmt.Errorf("failed to check moss_api.dismsg_user_status existence: %w", err)
 				}
 				if !exists {
-					return "", nil, fmt.Errorf("table moss_api.dismsg_user_status not found; required for kinds 1404/1405")
+					return "", nil, fmt.Errorf("table moss_api.dismsg_user_status not found; required for kinds 106/1404/1405")
 				}
 
 				needDisappearingJoin = true
@@ -199,66 +202,76 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		conditions = append(conditions, ` event.pubkey IN (`+makePlaceHolders(len(filter.Authors))+`)`)
 	}
 
-	   normalTagConditions := make([]string, 0)
-	   kTagValues := []string{}
-	   for key, values := range filter.Tags {
-			   if len(values) == 0 {
-					   return "", nil, EmptyTagSet
-			   }
-			   if key == "k" {
-					   for _, tagValue := range values {
-							   kTagValues = append(kTagValues, tagValue)
-					   }
-			   } else {
-					   tagPlaceholders := make([]string, 0, len(values))
-					   for _, tagValue := range values {
-							   params = append(params, tagValue)
-							   tagPlaceholders = append(tagPlaceholders, "?")
-					   }
-					   if len(tagPlaceholders) > 0 {
-							   normalTagConditions = append(normalTagConditions, `event.tagvalues && ARRAY[`+strings.Join(tagPlaceholders, ",")+`]`)
-					   }
-			   }
-	   }
-
-	   // k标签处理逻辑
-	   kTagCondition := ""
-	   if len(kTagValues) > 0 {
-			if needDisappearingJoin && has3048 {
-				// 有3048，非3048的k标签 OR (3048且未过期)
-				non3048 := make([]string, 0)
-				for _, v := range kTagValues {
-					if v != "3048" {
-						non3048 = append(non3048, v)
-					}
-				}
-				orParts := make([]string, 0)
-				if len(non3048) > 0 {
-					non3048Quoted := make([]string, 0, len(non3048))
-					for _, v := range non3048 {
-						non3048Quoted = append(non3048Quoted, "'"+v+"'")
-					}
-					orParts = append(orParts, `event.tagvalues && ARRAY[`+strings.Join(non3048Quoted, ",")+`]`)
-				}
-				// 3048且未过期
-				orParts = append(orParts, `(event.tagvalues && ARRAY['3048'] AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))`)
-				kTagCondition = "(" + strings.Join(orParts, " OR ") + ")"
-			} else {
-					// 没有3048，所有k标签和其他标签一样AND
-					tagPlaceholders := make([]string, 0, len(kTagValues))
-					for _, tagValue := range kTagValues {
-							params = append(params, tagValue)
-							tagPlaceholders = append(tagPlaceholders, "?")
-					}
-					if len(tagPlaceholders) > 0 {
-							kTagCondition = `event.tagvalues && ARRAY[` + strings.Join(tagPlaceholders, ",") + "]"
-					}
+	normalTagConditions := make([]string, 0)
+	kTagValues := []string{}
+	for key, values := range filter.Tags {
+		if len(values) == 0 {
+			return "", nil, EmptyTagSet
+		}
+		if key == "k" {
+			for _, tagValue := range values {
+				kTagValues = append(kTagValues, tagValue)
 			}
-	   }
+		} else {
+			tagPlaceholders := make([]string, 0, len(values))
+			for _, tagValue := range values {
+				params = append(params, tagValue)
+				tagPlaceholders = append(tagPlaceholders, "?")
+			}
+			if len(tagPlaceholders) > 0 {
+				normalTagConditions = append(normalTagConditions, `event.tagvalues && ARRAY[`+strings.Join(tagPlaceholders, ",")+`]`)
+			}
+		}
+	}
+
+	// k标签处理逻辑
+	kTagCondition := ""
+	if len(kTagValues) > 0 {
+		disappearingKValues := make([]string, 0)
+		otherKValues := make([]string, 0)
+		for _, v := range kTagValues {
+			if _, ok := disappearingKSet[v]; ok {
+				disappearingKValues = append(disappearingKValues, v)
+				continue
+			}
+			otherKValues = append(otherKValues, v)
+		}
+
+		if needDisappearingJoin && len(disappearingKValues) > 0 {
+			// 有阅后即焚k标签，非阅后即焚的k标签 OR (阅后即焚k标签且未过期)
+			orParts := make([]string, 0)
+			if len(otherKValues) > 0 {
+				quoted := make([]string, 0, len(otherKValues))
+				for _, v := range otherKValues {
+					quoted = append(quoted, "'"+v+"'")
+				}
+				orParts = append(orParts, `event.tagvalues && ARRAY[`+strings.Join(quoted, ",")+`]`)
+			}
+			seen := make(map[string]struct{})
+			for _, v := range disappearingKValues {
+				if _, exists := seen[v]; exists {
+					continue
+				}
+				seen[v] = struct{}{}
+				orParts = append(orParts, `(event.tagvalues && ARRAY['`+v+`'] AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))`)
+			}
+			kTagCondition = "(" + strings.Join(orParts, " OR ") + ")"
+		} else {
+			// 没有阅后即焚k标签，所有k标签和其他标签一样AND
+			tagPlaceholders := make([]string, 0, len(kTagValues))
+			for _, tagValue := range kTagValues {
+				params = append(params, tagValue)
+				tagPlaceholders = append(tagPlaceholders, "?")
+			}
+			if len(tagPlaceholders) > 0 {
+				kTagCondition = `event.tagvalues && ARRAY[` + strings.Join(tagPlaceholders, ",") + "]"
+			}
+		}
+	}
 	// 合并k标签和其他标签
 	conditions = append(conditions, normalTagConditions...)
 	if kTagCondition != "" {
-			conditions = append(conditions, kTagCondition)
+		conditions = append(conditions, kTagCondition)
 	}
 
 	if filter.Since != nil {
@@ -293,28 +306,31 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	// 构建基础 FROM 子句和额外的条件
 	fromClause := "event"
 	extraConditions := make([]string, 0)
-	
+
 	if needDisappearingJoin {
 		fromClause = "event LEFT JOIN moss_api.dismsg_user_status dus ON event.id = dus.event_id AND dus.user_pubkey = ?"
 	}
 
-	   normalKindConditions := make([]string, 0)
-	   disappearingConditions := make([]string, 0)
-	   for _, kind := range filter.Kinds {
-			   switch kind {
-			   case 1404:
-					   disappearingConditions = append(disappearingConditions,
-							   "(event.kind = 1404 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
-			   case 1405:
-					   disappearingConditions = append(disappearingConditions,
-							   "(event.kind = 1405 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
-			   case 1059:
-					   // 1059的tag条件已在上面处理，这里只拼kind
-					   normalKindConditions = append(normalKindConditions, "event.kind = 1059")
-			   default:
-					   normalKindConditions = append(normalKindConditions, fmt.Sprintf("event.kind = %d", kind))
-			   }
-	   }
+	normalKindConditions := make([]string, 0)
+	disappearingConditions := make([]string, 0)
+	for _, kind := range filter.Kinds {
+		switch kind {
+		case 106:
+			disappearingConditions = append(disappearingConditions,
+				"(event.kind = 106 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
+		case 1404:
+			disappearingConditions = append(disappearingConditions,
+				"(event.kind = 1404 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
+		case 1405:
+			disappearingConditions = append(disappearingConditions,
+				"(event.kind = 1405 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
+		case 1059:
+			// 1059的tag条件已在上面处理，这里只拼kind
+			normalKindConditions = append(normalKindConditions, "event.kind = 1059")
+		default:
+			normalKindConditions = append(normalKindConditions, fmt.Sprintf("event.kind = %d", kind))
+		}
+	}
 
 	combinedConditions := make([]string, 0)
 	if len(normalKindConditions) > 0 {
