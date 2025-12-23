@@ -47,7 +47,7 @@ func (b *PostgresBackend) SaveEvents(ctx context.Context, events []*nostr.Event)
 		}()
 	}
 
-	fmt.Printf("TX: SaveEvents: starting transaction for %d events\n", len(events))
+	fmt.Printf("TX: SaveEvents: starting transaction for %d events%s\n", len(events), traceSuffix(ctx))
 
 	for _, evt := range events {
 		if nostr.IsReplaceableKind(evt.Kind) || nostr.IsAddressableKind(evt.Kind) {
@@ -77,7 +77,7 @@ func (b *PostgresBackend) SaveEvents(ctx context.Context, events []*nostr.Event)
 			if err == nil {
 				// 找到了之前的事件，比较时间戳
 				if prevCreatedAt >= evt.CreatedAt {
-					fmt.Printf("SaveEvents: event %s is older than existing, skipping\n", evt.ID)
+					fmt.Printf("SaveEvents: event %s is older than existing, skipping%s\n", evt.ID, traceSuffix(ctx))
 					shouldStore = false
 				} else {
 					// 删除旧事件
@@ -87,7 +87,7 @@ func (b *PostgresBackend) SaveEvents(ctx context.Context, events []*nostr.Event)
 						}
 						return fmt.Errorf("failed to delete event for replacing: %w", err)
 					}
-					fmt.Printf("SaveEvents: deleted older event %s for replacement\n", prevID)
+					fmt.Printf("SaveEvents: deleted older event %s for replacement%s\n", prevID, traceSuffix(ctx))
 				}
 			}
 			// 如果 err != nil，说明没有找到之前的事件，继续插入
@@ -100,7 +100,7 @@ func (b *PostgresBackend) SaveEvents(ctx context.Context, events []*nostr.Event)
 		sql, params, _ := saveEventSql(evt)
 		res, err := exec.ExecContext(ctx, sql, params...)
 		if err != nil {
-			fmt.Printf("SaveEvents: failed to execute SQL: %v, ctx.Err: %v\n", err, ctx.Err())
+			fmt.Printf("SaveEvents: failed to execute SQL: %v, ctx.Err: %v%s\n", err, ctx.Err(), traceSuffix(ctx))
 			if needCommit {
 				tx.Rollback()
 			}
@@ -116,20 +116,20 @@ func (b *PostgresBackend) SaveEvents(ctx context.Context, events []*nostr.Event)
 		}
 
 		if nr == 0 {
-			fmt.Printf("SaveEvents: event %s was not inserted (maybe duplicate), continuing\n", evt.ID)
+			fmt.Printf("SaveEvents: event %s was not inserted (maybe duplicate), continuing%s\n", evt.ID, traceSuffix(ctx))
 			continue
 		}
 
-		fmt.Printf("SaveEvents: event %s saved successfully, rows: %d\n", evt.ID, nr)
+		fmt.Printf("SaveEvents: event %s saved successfully, rows: %d%s\n", evt.ID, nr, traceSuffix(ctx))
 	}
 
 	// 只有在我们创建了事务的情况下才提交
 	if needCommit {
 		if err := tx.Commit(); err != nil {
-			fmt.Printf("SaveEvents: failed to commit transaction: %v\n", err)
+			fmt.Printf("SaveEvents: failed to commit transaction: %v%s\n", err, traceSuffix(ctx))
 			return fmt.Errorf("failed to commit transaction: %w", err)
 		}
-		fmt.Printf("SaveEvents: all %d events saved successfully\n", len(events))
+		fmt.Printf("SaveEvents: all %d events saved successfully%s\n", len(events), traceSuffix(ctx))
 	}
 
 	return nil
@@ -214,7 +214,7 @@ ON CONFLICT (event_id) DO UPDATE
 		}
 	}
 
-	fmt.Printf("UpsertDisappearing: event %s upserted successfully\n", eventID)
+	fmt.Printf("UpsertDisappearing: event %s upserted successfully%s\n", eventID, traceSuffix(ctx))
 	return nil
 }
 
@@ -238,7 +238,7 @@ func (b *PostgresBackend) EnsureDisappearingSchema() error {
 	CREATE INDEX IF NOT EXISTS disappearingmessage_expiration ON moss_api.dismsg_messages USING btree (expiration);
 	CREATE UNIQUE INDEX IF NOT EXISTS dismsg_messages_event_id_key ON moss_api.dismsg_messages USING btree (event_id);
 	`
-	
+
 	if _, err := b.DB.Exec(query); err != nil {
 		return fmt.Errorf("failed to create schema and table: %w", err)
 	}

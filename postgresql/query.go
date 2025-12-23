@@ -25,13 +25,13 @@ func (b *PostgresBackend) QueryEvents(ctx context.Context, filter nostr.Filter) 
 	}
 
 	// 打印实际执行的SQL语句（嵌入参数）
-	log.Printf("Executing SQL Query: %s", formatSQLWithParams(query, params))
+	log.Printf("Executing SQL Query: %s%s", formatSQLWithParams(query, params), traceSuffix(ctx))
 	// log.Printf("filters: Kinds=%v, tags=%v", filter.Kinds, filter.Tags)
 
 	if ctx == nil {
-		fmt.Printf("QueryEvents: context is nil for filter: %v\n", filter)
+		fmt.Printf("QueryEvents: context is nil for filter: %v%s\n", filter, traceSuffix(ctx))
 	} else if ctx.Err() != nil {
-		fmt.Printf("QueryEvents: context error: %v for filter: %v\n", ctx.Err(), filter)
+		fmt.Printf("QueryEvents: context error: %v for filter: %v%s\n", ctx.Err(), filter, traceSuffix(ctx))
 	}
 	rows, err := b.DB.QueryContext(ctx, query, params...)
 	if err != nil && err != sql.ErrNoRows {
@@ -59,7 +59,7 @@ func (b *PostgresBackend) QueryEvents(ctx context.Context, filter nostr.Filter) 
 		}
 	}()
 
-	fmt.Printf("RO-DB has %d connections\n", b.DB.Stats().OpenConnections)
+	fmt.Printf("RO-DB has %d connections%s\n", b.DB.Stats().OpenConnections, traceSuffix(ctx))
 	return ch, nil
 }
 
@@ -70,7 +70,7 @@ func (b *PostgresBackend) CountEvents(ctx context.Context, filter nostr.Filter) 
 	}
 
 	// 打印实际执行的SQL语句（嵌入参数）
-	log.Printf("Executing Count SQL Query: %s", formatSQLWithParams(query, params))
+	log.Printf("Executing Count SQL Query: %s%s", formatSQLWithParams(query, params), traceSuffix(ctx))
 
 	var count int64
 	if err = b.DB.QueryRowContext(ctx, query, params...).Scan(&count); err != nil && err != sql.ErrNoRows {
@@ -290,13 +290,13 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	// 过滤已过期的事件（expiration标签）
 	// 只选择没有expiration标签，或者expiration标签值大于当前时间戳的事件
 	conditions = append(conditions, `(
-		NOT EXISTS (
-			SELECT 1 FROM jsonb_array_elements(event.tags) AS tag_elem
-			WHERE jsonb_array_length(tag_elem) >= 2 
-			AND tag_elem->>0 = 'expiration'
-			AND (tag_elem->>1)::bigint <= EXTRACT(EPOCH FROM NOW())
-		)
-	)`)
+        NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements(event.tags) AS tag_elem
+            WHERE jsonb_array_length(tag_elem) >= 2 
+            AND tag_elem->>0 = 'expiration'
+            AND (tag_elem->>1)::bigint <= EXTRACT(EPOCH FROM NOW())
+        )
+    )`)
 
 	if len(conditions) == 0 {
 		// fallback
