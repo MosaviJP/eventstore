@@ -2,7 +2,8 @@ package postgresql
 
 import "context"
 
-const traceIDContextKey = "amzn-trace-id"
+const traceIDContextKey = "trace-id"
+const rootTraceIDContextKey = "root-trace-id"
 
 func traceIDFromContext(ctx context.Context) string {
 	if ctx == nil {
@@ -16,10 +17,29 @@ func traceIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-func traceSuffix(ctx context.Context) string {
-	traceID := traceIDFromContext(ctx)
-	if traceID == "" {
+func rootTraceIDFromContext(ctx context.Context) string {
+	if ctx == nil {
 		return ""
 	}
-	return " trace_id=" + traceID
+	if v := ctx.Value(rootTraceIDContextKey); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+func traceSuffix(ctx context.Context) string {
+	traceID := traceIDFromContext(ctx)
+	rootTraceID := rootTraceIDFromContext(ctx)
+	if traceID == "" && rootTraceID == "" {
+		return ""
+	}
+	if traceID == "" {
+		return " root_trace_id=" + rootTraceID
+	}
+	if rootTraceID == "" {
+		return " trace_id=" + traceID
+	}
+	return " trace_id=" + traceID + " root_trace_id=" + rootTraceID
 }
