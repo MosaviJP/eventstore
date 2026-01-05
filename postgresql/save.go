@@ -99,7 +99,7 @@ func (b *PostgresBackend) SaveEvents(ctx context.Context, events []*nostr.Event)
 			}
 		}
 
-		sql, params, _ := saveEventSql(evt)
+		sql, params, _ := saveEventSql(ctx, evt)
 		res, err := exec.ExecContext(ctx, sql, params...)
 		if err != nil {
 			fmt.Printf("SaveEvents: failed to execute SQL: %v, ctx.Err: %v%s\n", err, ctx.Err(), traceSuffix(ctx))
@@ -151,7 +151,7 @@ func (b *PostgresBackend) AfterSave(evt *nostr.Event) {
     )`, evt.PubKey, evt.Kind)
 }
 
-func saveEventSql(evt *nostr.Event) (string, []any, error) {
+func saveEventSql(ctx context.Context, evt *nostr.Event) (string, []any, error) {
 	const query = `INSERT INTO event (
 	id, pubkey, created_at, kind, tags, expiration_at, content, sig)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -159,20 +159,21 @@ func saveEventSql(evt *nostr.Event) (string, []any, error) {
 
 	var (
 		tagsj, _ = json.Marshal(evt.Tags)
-		expAt    = extractExpirationAt(evt.Tags)
+		expAt    = extractExpirationAt(ctx, evt.ID, evt.Tags)
 		params   = []any{evt.ID, evt.PubKey, evt.CreatedAt, evt.Kind, tagsj, expAt, evt.Content, evt.Sig}
 	)
 
 	return query, params, nil
 }
 
-func extractExpirationAt(tags nostr.Tags) sql.NullInt64 {
+func extractExpirationAt(ctx context.Context, eventID string, tags nostr.Tags) sql.NullInt64 {
 	for _, tag := range tags {
 		if len(tag) < 2 || tag[0] != "expiration" {
 			continue
 		}
 		value, err := strconv.ParseInt(tag[1], 10, 64)
 		if err != nil {
+			fmt.Printf("SaveEvents: invalid expiration tag value for event %s: %q (err=%v)%s\n", eventID, tag[1], err, traceSuffix(ctx))
 			return sql.NullInt64{Valid: false}
 		}
 		return sql.NullInt64{Int64: value, Valid: true}
