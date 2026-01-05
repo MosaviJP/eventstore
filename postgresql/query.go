@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/nbd-wtf/go-nostr"
@@ -126,11 +127,36 @@ var (
 func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, userPubkey string) (string, []any, error) {
 	conditions := make([]string, 0, 7)
 	params := make([]any, 0, 20)
+	buildOverlapCondition := func(placeholders []string) string {
+		if len(placeholders) == 1 {
+			return `event.tagvalues && ARRAY[` + placeholders[0] + `]`
+		}
+		return `EXISTS (SELECT 1 FROM unnest(ARRAY[` + strings.Join(placeholders, ",") + `]) AS v WHERE event.tagvalues @> ARRAY[v])`
+	}
+	buildOrContainsCondition := func(placeholders []string) string {
+		if len(placeholders) == 1 {
+			return `event.tagvalues @> ARRAY[` + placeholders[0] + `]`
+		}
+		parts := make([]string, 0, len(placeholders))
+		for _, ph := range placeholders {
+			parts = append(parts, `event.tagvalues @> ARRAY[`+ph+`]`)
+		}
+		return "(" + strings.Join(parts, " OR ") + ")"
+	}
 
 	disappearingKSet := map[string]struct{}{
 		"3048": {},
 		"3049": {},
 		"3050": {},
+	}
+	var nowEpoch int64
+	nowEpochReady := false
+	getNowEpoch := func() int64 {
+		if !nowEpochReady {
+			nowEpoch = time.Now().Unix()
+			nowEpochReady = true
+		}
+		return nowEpoch
 	}
 
 	// 判断 k 标签中是否包含阅后即焚标识
@@ -218,7 +244,7 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 				tagPlaceholders = append(tagPlaceholders, "?")
 			}
 			if len(tagPlaceholders) > 0 {
-				normalTagConditions = append(normalTagConditions, `event.tagvalues && ARRAY[`+strings.Join(tagPlaceholders, ",")+`]`)
+				normalTagConditions = append(normalTagConditions, buildOverlapCondition(tagPlaceholders))
 			}
 		}
 	}
@@ -240,11 +266,12 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 			// 有阅后即焚k标签，非阅后即焚的k标签 OR (阅后即焚k标签且未过期)
 			orParts := make([]string, 0)
 			if len(otherKValues) > 0 {
-				quoted := make([]string, 0, len(otherKValues))
+				tagPlaceholders := make([]string, 0, len(otherKValues))
 				for _, v := range otherKValues {
-					quoted = append(quoted, "'"+v+"'")
+					params = append(params, v)
+					tagPlaceholders = append(tagPlaceholders, "?")
 				}
-				orParts = append(orParts, `event.tagvalues && ARRAY[`+strings.Join(quoted, ",")+`]`)
+				orParts = append(orParts, buildOrContainsCondition(tagPlaceholders))
 			}
 			seen := make(map[string]struct{})
 			for _, v := range disappearingKValues {
@@ -252,7 +279,16 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 					continue
 				}
 				seen[v] = struct{}{}
-				orParts = append(orParts, `(event.tagvalues && ARRAY['`+v+`'] AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))`)
+				expClause := ""
+				switch v {
+				case "3048":
+					expClause = " AND event.expiration_at > ?"
+					params = append(params, getNowEpoch())
+				case "3049", "3050":
+					expClause = " AND (event.expiration_at IS NULL OR event.expiration_at > ?)"
+					params = append(params, getNowEpoch())
+				}
+				orParts = append(orParts, `(event.tagvalues @> ARRAY['`+v+`'] AND (dus.burn_at IS NULL OR dus.burn_at > NOW())`+expClause+`)`)
 			}
 			kTagCondition = "(" + strings.Join(orParts, " OR ") + ")"
 		} else {
@@ -263,7 +299,7 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 				tagPlaceholders = append(tagPlaceholders, "?")
 			}
 			if len(tagPlaceholders) > 0 {
-				kTagCondition = `event.tagvalues && ARRAY[` + strings.Join(tagPlaceholders, ",") + "]"
+				kTagCondition = buildOrContainsCondition(tagPlaceholders)
 			}
 		}
 	}
@@ -273,29 +309,23 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		conditions = append(conditions, kTagCondition)
 	}
 
-	if filter.Since != nil {
-		conditions = append(conditions, `event.created_at >= ?`)
-		params = append(params, filter.Since)
-	}
-	if filter.Until != nil {
-		conditions = append(conditions, `event.created_at <= ?`)
-		params = append(params, filter.Until)
+	if filter.Since != nil && filter.Until != nil {
+		conditions = append(conditions, `event.created_at BETWEEN ? AND ?`)
+		params = append(params, filter.Since, filter.Until)
+	} else {
+		if filter.Since != nil {
+			conditions = append(conditions, `event.created_at >= ?`)
+			params = append(params, filter.Since)
+		}
+		if filter.Until != nil {
+			conditions = append(conditions, `event.created_at <= ?`)
+			params = append(params, filter.Until)
+		}
 	}
 	if filter.Search != "" {
 		conditions = append(conditions, `event.content LIKE ?`)
 		params = append(params, `%`+strings.ReplaceAll(filter.Search, `%`, `\%`)+`%`)
 	}
-
-	// 过滤已过期的事件（expiration标签）
-	// 只选择没有expiration标签，或者expiration标签值大于当前时间戳的事件
-	conditions = append(conditions, `(
-        NOT EXISTS (
-            SELECT 1 FROM jsonb_array_elements(event.tags) AS tag_elem
-            WHERE jsonb_array_length(tag_elem) >= 2 
-            AND tag_elem->>0 = 'expiration'
-            AND (tag_elem->>1)::bigint <= EXTRACT(EPOCH FROM NOW())
-        )
-    )`)
 
 	if len(conditions) == 0 {
 		// fallback
@@ -312,23 +342,38 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 
 	normalKindConditions := make([]string, 0)
 	disappearingConditions := make([]string, 0)
+	var expNullKinds []int
+	var expRequiredKinds []int
 	for _, kind := range filter.Kinds {
 		switch kind {
 		case 106:
-			disappearingConditions = append(disappearingConditions,
-				"(event.kind = 106 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
-		case 1404:
-			disappearingConditions = append(disappearingConditions,
-				"(event.kind = 1404 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
-		case 1405:
-			disappearingConditions = append(disappearingConditions,
-				"(event.kind = 1405 AND (dus.burn_at IS NULL OR dus.burn_at > NOW()))")
+			expNullKinds = append(expNullKinds, 106)
+		case 1404, 1405:
+			expRequiredKinds = append(expRequiredKinds, kind)
 		case 1059:
 			// 1059的tag条件已在上面处理，这里只拼kind
 			normalKindConditions = append(normalKindConditions, "event.kind = 1059")
 		default:
 			normalKindConditions = append(normalKindConditions, fmt.Sprintf("event.kind = %d", kind))
 		}
+	}
+	if len(expNullKinds) > 0 {
+		parts := make([]string, 0, len(expNullKinds))
+		for _, kind := range expNullKinds {
+			parts = append(parts, fmt.Sprintf("event.kind = %d", kind))
+		}
+		disappearingConditions = append(disappearingConditions,
+			"("+strings.Join(parts, " OR ")+") AND (dus.burn_at IS NULL OR dus.burn_at > NOW()) AND (event.expiration_at IS NULL OR event.expiration_at > ?)")
+		params = append(params, getNowEpoch())
+	}
+	if len(expRequiredKinds) > 0 {
+		parts := make([]string, 0, len(expRequiredKinds))
+		for _, kind := range expRequiredKinds {
+			parts = append(parts, fmt.Sprintf("event.kind = %d", kind))
+		}
+		disappearingConditions = append(disappearingConditions,
+			"("+strings.Join(parts, " OR ")+") AND (dus.burn_at IS NULL OR dus.burn_at > NOW()) AND event.expiration_at > ?")
+		params = append(params, getNowEpoch())
 	}
 
 	combinedConditions := make([]string, 0)
