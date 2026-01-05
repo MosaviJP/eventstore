@@ -2,8 +2,10 @@ package postgresql
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/MosaviJP/eventstore"
@@ -151,16 +153,31 @@ func (b *PostgresBackend) AfterSave(evt *nostr.Event) {
 
 func saveEventSql(evt *nostr.Event) (string, []any, error) {
 	const query = `INSERT INTO event (
-	id, pubkey, created_at, kind, tags, content, sig)
-	VALUES ($1, $2, $3, $4, $5, $6, $7)
+	id, pubkey, created_at, kind, tags, expiration_at, content, sig)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	ON CONFLICT (id) DO NOTHING`
 
 	var (
 		tagsj, _ = json.Marshal(evt.Tags)
-		params   = []any{evt.ID, evt.PubKey, evt.CreatedAt, evt.Kind, tagsj, evt.Content, evt.Sig}
+		expAt    = extractExpirationAt(evt.Tags)
+		params   = []any{evt.ID, evt.PubKey, evt.CreatedAt, evt.Kind, tagsj, expAt, evt.Content, evt.Sig}
 	)
 
 	return query, params, nil
+}
+
+func extractExpirationAt(tags nostr.Tags) sql.NullInt64 {
+	for _, tag := range tags {
+		if len(tag) < 2 || tag[0] != "expiration" {
+			continue
+		}
+		value, err := strconv.ParseInt(tag[1], 10, 64)
+		if err != nil {
+			return sql.NullInt64{Valid: false}
+		}
+		return sql.NullInt64{Int64: value, Valid: true}
+	}
+	return sql.NullInt64{Valid: false}
 }
 
 // UpsertDisappearing 插入或更新消失消息记录
