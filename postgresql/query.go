@@ -128,10 +128,7 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	conditions := make([]string, 0, 7)
 	params := make([]any, 0, 20)
 	buildOverlapCondition := func(placeholders []string) string {
-		if len(placeholders) == 1 {
-			return `event.tagvalues && ARRAY[` + placeholders[0] + `]`
-		}
-		return `EXISTS (SELECT 1 FROM unnest(ARRAY[` + strings.Join(placeholders, ",") + `]) AS v WHERE event.tagvalues @> ARRAY[v])`
+		return `event.tagvalues && ARRAY[` + strings.Join(placeholders, ",") + `]`
 	}
 	buildOrContainsCondition := func(placeholders []string) string {
 		if len(placeholders) == 1 {
@@ -251,7 +248,8 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 
 	// k标签处理逻辑
 	kTagCondition := ""
-	if len(kTagValues) > 0 {
+	splitKTags := len(kTagValues) > 1
+	if len(kTagValues) > 0 && !splitKTags {
 		disappearingKValues := make([]string, 0)
 		otherKValues := make([]string, 0)
 		for _, v := range kTagValues {
@@ -389,26 +387,73 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 
 	// 合并所有条件
 	allConditions := append(conditions, extraConditions...)
+	baseWhere := strings.Join(allConditions, " AND ")
+	baseParams := append([]any(nil), params...)
+
+	var query string
+	if splitKTags {
+		seenK := make(map[string]struct{})
+		subQueries := make([]string, 0, len(kTagValues))
+		params = params[:0]
+		for _, k := range kTagValues {
+			if _, exists := seenK[k]; exists {
+				continue
+			}
+			seenK[k] = struct{}{}
+
+			kCondition := `event.tagvalues @> ARRAY[?]`
+			kParams := []any{k}
+			if needDisappearingJoin {
+				if _, ok := disappearingKSet[k]; ok {
+					kCondition += ` AND (dus.burn_at IS NULL OR dus.burn_at > NOW())`
+					switch k {
+					case "3048":
+						kCondition += " AND event.expiration_at > ?"
+						kParams = append(kParams, getNowEpoch())
+					case "3049", "3050":
+						kCondition += " AND (event.expiration_at IS NULL OR event.expiration_at > ?)"
+						kParams = append(kParams, getNowEpoch())
+					}
+				}
+			}
+
+			subWhere := baseWhere + " AND " + kCondition
+			if doCount {
+				subQueries = append(subQueries, `SELECT 1 FROM `+fromClause+` WHERE `+subWhere)
+			} else {
+				subQueries = append(subQueries, `SELECT event.id, event.pubkey, event.created_at, event.kind, event.tags, event.content, event.sig FROM `+fromClause+` WHERE `+subWhere)
+			}
+
+			params = append(params, baseParams...)
+			params = append(params, kParams...)
+		}
+
+		if doCount {
+			query = sqlx.Rebind(sqlx.BindType("postgres"), `SELECT COUNT(*) FROM (`+strings.Join(subQueries, " UNION ALL ")+`) AS ev LIMIT ?`)
+		} else {
+			query = sqlx.Rebind(sqlx.BindType("postgres"), `SELECT ev.id, ev.pubkey, ev.created_at, ev.kind, ev.tags, ev.content, ev.sig FROM (`+strings.Join(subQueries, " UNION ALL ")+`) AS ev ORDER BY ev.created_at DESC, ev.id LIMIT ?`)
+		}
+	} else {
+		if doCount {
+			query = sqlx.Rebind(sqlx.BindType("postgres"), `SELECT
+		  COUNT(*)
+		FROM `+fromClause+` WHERE `+
+				baseWhere+
+				" LIMIT ?")
+		} else {
+			query = sqlx.Rebind(sqlx.BindType("postgres"), `SELECT
+		  event.id, event.pubkey, event.created_at, event.kind, event.tags, event.content, event.sig
+		FROM `+fromClause+` WHERE `+
+				baseWhere+
+				" ORDER BY event.created_at DESC, event.id LIMIT ?")
+		}
+		params = baseParams
+	}
 
 	if filter.Limit < 1 || filter.Limit > b.QueryLimit {
 		params = append(params, b.QueryLimit)
 	} else {
 		params = append(params, filter.Limit)
-	}
-
-	var query string
-	if doCount {
-		query = sqlx.Rebind(sqlx.BindType("postgres"), `SELECT
-		  COUNT(*)
-		FROM `+fromClause+` WHERE `+
-			strings.Join(allConditions, " AND ")+
-			" LIMIT ?")
-	} else {
-		query = sqlx.Rebind(sqlx.BindType("postgres"), `SELECT
-		  event.id, event.pubkey, event.created_at, event.kind, event.tags, event.content, event.sig
-		FROM `+fromClause+` WHERE `+
-			strings.Join(allConditions, " AND ")+
-			" ORDER BY event.created_at DESC, event.id LIMIT ?")
 	}
 
 	return query, params, nil
