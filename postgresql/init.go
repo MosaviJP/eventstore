@@ -121,6 +121,19 @@ CREATE OR REPLACE FUNCTION tags_to_tagvalues(jsonb) RETURNS text[]
 	IMMUTABLE
 	RETURNS NULL ON NULL INPUT;
 
+-- 专门用于 kind=1059 事件的标签提取函数
+CREATE OR REPLACE FUNCTION extract_k_tag_value(jsonb) RETURNS text
+	AS 'SELECT t->>1 FROM (SELECT jsonb_array_elements($1) AS t) s WHERE t->>0 = ''k'' LIMIT 1;'
+	LANGUAGE SQL
+	IMMUTABLE
+	RETURNS NULL ON NULL INPUT;
+
+CREATE OR REPLACE FUNCTION extract_p_tag_value(jsonb) RETURNS text
+	AS 'SELECT t->>1 FROM (SELECT jsonb_array_elements($1) AS t) s WHERE t->>0 = ''p'' LIMIT 1;'
+	LANGUAGE SQL
+	IMMUTABLE
+	RETURNS NULL ON NULL INPUT;
+
 CREATE TABLE IF NOT EXISTS event (
   id text NOT NULL,
   pubkey text NOT NULL,
@@ -139,6 +152,11 @@ CREATE INDEX IF NOT EXISTS timeidx ON event (created_at DESC);
 CREATE INDEX IF NOT EXISTS kindidx ON event (kind);
 CREATE INDEX IF NOT EXISTS kindtimeidx ON event(kind,created_at DESC);
 CREATE INDEX IF NOT EXISTS arbitrarytagvalues ON event USING gin (tagvalues);
+
+-- 专门为 kind=1059 giftwrap 事件优化的索引
+CREATE INDEX IF NOT EXISTS kind1059_k_tag_idx ON event USING btree (extract_k_tag_value(tags)) WHERE kind = 1059;
+CREATE INDEX IF NOT EXISTS kind1059_p_tag_idx ON event USING btree (extract_p_tag_value(tags)) WHERE kind = 1059;
+CREATE INDEX IF NOT EXISTS kind1059_k_p_combo_idx ON event USING btree (extract_k_tag_value(tags), extract_p_tag_value(tags)) WHERE kind = 1059;
 	`)
 
 	if err != nil {

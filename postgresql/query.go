@@ -226,6 +226,11 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 
 	normalTagConditions := make([]string, 0)
 	kTagValues := []string{}
+	pTagValues := []string{}
+	
+	// 检查是否为 kind=1059 的优化查询路径
+	isKind1059Only := len(filter.Kinds) == 1 && filter.Kinds[0] == 1059
+	
 	for key, values := range filter.Tags {
 		if len(values) == 0 {
 			return "", nil, EmptyTagSet
@@ -233,6 +238,11 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		if key == "k" {
 			for _, tagValue := range values {
 				kTagValues = append(kTagValues, tagValue)
+			}
+		} else if key == "p" && isKind1059Only {
+			// 对于 kind=1059，单独处理 p 标签以便使用专门索引
+			for _, tagValue := range values {
+				pTagValues = append(pTagValues, tagValue)
 			}
 		} else {
 			tagPlaceholders := make([]string, 0, len(values))
@@ -249,36 +259,16 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	// k标签处理逻辑
 	kTagCondition := ""
 	splitKTags := len(kTagValues) > 1
-	if len(kTagValues) > 0 && !splitKTags {
-		disappearingKValues := make([]string, 0)
-		otherKValues := make([]string, 0)
-		for _, v := range kTagValues {
-			if _, ok := disappearingKSet[v]; ok {
-				disappearingKValues = append(disappearingKValues, v)
-				continue
-			}
-			otherKValues = append(otherKValues, v)
-		}
-
-		if needDisappearingJoin && len(disappearingKValues) > 0 {
-			// 有阅后即焚k标签，非阅后即焚的k标签 OR (阅后即焚k标签且未过期)
-			orParts := make([]string, 0)
-			if len(otherKValues) > 0 {
-				tagPlaceholders := make([]string, 0, len(otherKValues))
-				for _, v := range otherKValues {
-					params = append(params, v)
-					tagPlaceholders = append(tagPlaceholders, "?")
-				}
-				orParts = append(orParts, buildOrContainsCondition(tagPlaceholders))
-			}
-			seen := make(map[string]struct{})
-			for _, v := range disappearingKValues {
-				if _, exists := seen[v]; exists {
-					continue
-				}
-				seen[v] = struct{}{}
+	
+	// 针对 kind=1059 的优化路径：使用专门的函数索引
+	if isKind1059Only && len(kTagValues) > 0 {
+		// 构建 k 标签条件
+		kConditions := make([]string, 0, len(kTagValues))
+		for _, kValue := range kTagValues {
+			// 检查是否为阅后即焚标签，需要特殊处理
+			if _, isDisappearing := disappearingKSet[kValue]; isDisappearing && needDisappearingJoin {
 				expClause := ""
-				switch v {
+				switch kValue {
 				case "3048":
 					expClause = " AND event.expiration_at > ?"
 					params = append(params, getNowEpoch())
@@ -286,21 +276,98 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 					expClause = " AND (event.expiration_at IS NULL OR event.expiration_at > ?)"
 					params = append(params, getNowEpoch())
 				}
-				orParts = append(orParts, `(event.tagvalues @> ARRAY['`+v+`'] AND (dus.burn_at IS NULL OR dus.burn_at > NOW())`+expClause+`)`)
+				
+				params = append(params, kValue)
+				kConditions = append(kConditions, 
+					`(extract_k_tag_value(event.tags) = ? AND (dus.burn_at IS NULL OR dus.burn_at > NOW())`+expClause+`)`)
+			} else {
+				// 普通的 k 标签查询
+				params = append(params, kValue)
+				kConditions = append(kConditions, `extract_k_tag_value(event.tags) = ?`)
 			}
-			kTagCondition = "(" + strings.Join(orParts, " OR ") + ")"
+		}
+		
+		// 如果有 p 标签，使用 extract_p_tag_value 函数索引（适合每个事件只有1个p标签的场景）
+		if len(pTagValues) > 0 {
+			pPlaceholders := make([]string, 0, len(pTagValues))
+			for _, pValue := range pTagValues {
+				params = append(params, pValue)
+				pPlaceholders = append(pPlaceholders, "?")
+			}
+			pCondition := `extract_p_tag_value(event.tags) IN (` + strings.Join(pPlaceholders, ",") + `)`
+			
+			// 组合 k 和 p 条件：任一 k 标签 AND 任一 p 标签
+			if len(kConditions) == 1 {
+				conditions = append(conditions, kConditions[0]+" AND "+pCondition)
+			} else {
+				conditions = append(conditions, "("+strings.Join(kConditions, " OR ")+") AND "+pCondition)
+			}
 		} else {
-			// 没有阅后即焚k标签，所有k标签和其他标签一样AND
-			tagPlaceholders := make([]string, 0, len(kTagValues))
-			for _, tagValue := range kTagValues {
-				params = append(params, tagValue)
-				tagPlaceholders = append(tagPlaceholders, "?")
+			// 只有 k 标签
+			if len(kConditions) == 1 {
+				conditions = append(conditions, kConditions[0])
+			} else {
+				conditions = append(conditions, "("+strings.Join(kConditions, " OR ")+")")
 			}
-			if len(tagPlaceholders) > 0 {
-				kTagCondition = buildOrContainsCondition(tagPlaceholders)
+		}
+		
+		// 跳过原来的 k 标签处理逻辑
+	} else {
+		// 原来的 k 标签处理逻辑
+		if len(kTagValues) > 0 && !splitKTags {
+			disappearingKValues := make([]string, 0)
+			otherKValues := make([]string, 0)
+			for _, v := range kTagValues {
+				if _, ok := disappearingKSet[v]; ok {
+					disappearingKValues = append(disappearingKValues, v)
+					continue
+				}
+				otherKValues = append(otherKValues, v)
+			}
+
+			if needDisappearingJoin && len(disappearingKValues) > 0 {
+				// 有阅后即焚k标签，非阅后即焚的k标签 OR (阅后即焚k标签且未过期)
+				orParts := make([]string, 0)
+				if len(otherKValues) > 0 {
+					tagPlaceholders := make([]string, 0, len(otherKValues))
+					for _, v := range otherKValues {
+						params = append(params, v)
+						tagPlaceholders = append(tagPlaceholders, "?")
+					}
+					orParts = append(orParts, buildOrContainsCondition(tagPlaceholders))
+				}
+				seen := make(map[string]struct{})
+				for _, v := range disappearingKValues {
+					if _, exists := seen[v]; exists {
+						continue
+					}
+					seen[v] = struct{}{}
+					expClause := ""
+					switch v {
+					case "3048":
+						expClause = " AND event.expiration_at > ?"
+						params = append(params, getNowEpoch())
+					case "3049", "3050":
+						expClause = " AND (event.expiration_at IS NULL OR event.expiration_at > ?)"
+						params = append(params, getNowEpoch())
+					}
+					orParts = append(orParts, `(event.tagvalues @> ARRAY['`+v+`'] AND (dus.burn_at IS NULL OR dus.burn_at > NOW())`+expClause+`)`)
+				}
+				kTagCondition = "(" + strings.Join(orParts, " OR ") + ")"
+			} else {
+				// 没有阅后即焚k标签，所有k标签和其他标签一样AND
+				tagPlaceholders := make([]string, 0, len(kTagValues))
+				for _, tagValue := range kTagValues {
+					params = append(params, tagValue)
+					tagPlaceholders = append(tagPlaceholders, "?")
+				}
+				if len(tagPlaceholders) > 0 {
+					kTagCondition = buildOrContainsCondition(tagPlaceholders)
+				}
 			}
 		}
 	}
+	
 	// 合并k标签和其他标签
 	conditions = append(conditions, normalTagConditions...)
 	if kTagCondition != "" {
