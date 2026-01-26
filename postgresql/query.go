@@ -267,6 +267,7 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		for _, kValue := range kTagValues {
 			// 检查是否为阅后即焚标签，需要特殊处理
 			if _, isDisappearing := disappearingKSet[kValue]; isDisappearing && needDisappearingJoin {
+				params = append(params, kValue)
 				expClause := ""
 				switch kValue {
 				case "3048":
@@ -277,7 +278,6 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 					params = append(params, getNowEpoch())
 				}
 				
-				params = append(params, kValue)
 				kConditions = append(kConditions, 
 					`(extract_k_tag_value(event.tags) = ? AND (dus.burn_at IS NULL OR dus.burn_at > NOW())`+expClause+`)`)
 			} else {
@@ -311,7 +311,8 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 			}
 		}
 		
-		// 跳过原来的 k 标签处理逻辑
+		// kind=1059优化路径处理完毕，不需要执行后续的k标签逻辑
+		kTagCondition = "" // 确保不会重复添加k标签条件
 	} else {
 		// 原来的 k 标签处理逻辑
 		if len(kTagValues) > 0 && !splitKTags {
