@@ -279,22 +279,22 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 				}
 				
 				kConditions = append(kConditions, 
-					`(extract_k_tag_value(event.tags) = ? AND (dus.burn_at IS NULL OR dus.burn_at > NOW())`+expClause+`)`)
+					`(event.ktag = ? AND (dus.burn_at IS NULL OR dus.burn_at > NOW())`+expClause+`)`)
 			} else {
 				// 普通的 k 标签查询
 				params = append(params, kValue)
-				kConditions = append(kConditions, `extract_k_tag_value(event.tags) = ?`)
+				kConditions = append(kConditions, `event.ktag = ?`)
 			}
 		}
 		
-		// 如果有 p 标签，使用 extract_p_tag_value 函数索引（适合每个事件只有1个p标签的场景）
+		// 如果有 p 标签，使用 ptag 列（适合每个事件只有1个p标签的场景）
 		if len(pTagValues) > 0 {
 			pPlaceholders := make([]string, 0, len(pTagValues))
 			for _, pValue := range pTagValues {
 				params = append(params, pValue)
 				pPlaceholders = append(pPlaceholders, "?")
 			}
-			pCondition := `extract_p_tag_value(event.tags) IN (` + strings.Join(pPlaceholders, ",") + `)`
+			pCondition := `event.ptag IN (` + strings.Join(pPlaceholders, ",") + `)`
 			
 			// 组合 k 和 p 条件：任一 k 标签 AND 任一 p 标签
 			if len(kConditions) == 1 {

@@ -142,9 +142,16 @@ CREATE TABLE IF NOT EXISTS event (
   tags jsonb NOT NULL,
   content text NOT NULL,
   sig text NOT NULL,
+  expiration_at bigint,
+  ktag text,
+  ptag text,
 
   tagvalues text[] GENERATED ALWAYS AS (tags_to_tagvalues(tags)) STORED
 );
+
+-- 添加新列（如果不存在的话）
+ALTER TABLE event ADD COLUMN IF NOT EXISTS ktag text;
+ALTER TABLE event ADD COLUMN IF NOT EXISTS ptag text;
 
 CREATE UNIQUE INDEX IF NOT EXISTS ididx ON event USING btree (id text_pattern_ops);
 CREATE INDEX IF NOT EXISTS pubkeyprefix ON event USING btree (pubkey text_pattern_ops);
@@ -153,10 +160,18 @@ CREATE INDEX IF NOT EXISTS kindidx ON event (kind);
 CREATE INDEX IF NOT EXISTS kindtimeidx ON event(kind,created_at DESC);
 CREATE INDEX IF NOT EXISTS arbitrarytagvalues ON event USING gin (tagvalues);
 
--- 专门为 kind=1059 giftwrap 事件优化的索引
-CREATE INDEX IF NOT EXISTS kind1059_k_tag_idx ON event USING btree (extract_k_tag_value(tags)) WHERE kind = 1059;
-CREATE INDEX IF NOT EXISTS kind1059_p_tag_idx ON event USING btree (extract_p_tag_value(tags)) WHERE kind = 1059;
-CREATE INDEX IF NOT EXISTS kind1059_k_p_combo_idx ON event USING btree (extract_k_tag_value(tags), extract_p_tag_value(tags)) WHERE kind = 1059;
+CREATE INDEX IF NOT EXISTS event_kind1059_ktag_created_idx
+ON event (ktag, created_at DESC)
+WHERE kind = 1059 AND ktag IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS event_kind1059_ptag_created_idx
+ON event (ptag, created_at DESC)
+WHERE kind = 1059 AND ptag IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS event_kind1059_ktag_ptag_created_idx
+ON event (ktag, ptag, created_at DESC)
+WHERE kind = 1059 AND ktag IS NOT NULL AND ptag IS NOT NULL;
+
 	`)
 
 	if err != nil {

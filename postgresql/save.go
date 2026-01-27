@@ -152,18 +152,47 @@ func (b *PostgresBackend) AfterSave(evt *nostr.Event) {
 }
 
 func saveEventSql(ctx context.Context, evt *nostr.Event) (string, []any, error) {
-	const query = `INSERT INTO event (
-	id, pubkey, created_at, kind, tags, expiration_at, content, sig)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	ON CONFLICT (id) DO NOTHING`
+	// 对于 kind=1059 事件，提取 k 和 p 标签值并存储到专门的列中
+	if evt.Kind == 1059 {
+		const query = `INSERT INTO event (
+		id, pubkey, created_at, kind, tags, expiration_at, content, sig, ktag, ptag)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (id) DO NOTHING`
 
-	var (
-		tagsj, _ = json.Marshal(evt.Tags)
-		expAt    = extractExpirationAt(ctx, evt.ID, evt.Tags)
-		params   = []any{evt.ID, evt.PubKey, evt.CreatedAt, evt.Kind, tagsj, expAt, evt.Content, evt.Sig}
-	)
+		var (
+			tagsj, _ = json.Marshal(evt.Tags)
+			expAt    = extractExpirationAt(ctx, evt.ID, evt.Tags)
+			kTag     = extractFirstTagValue(evt.Tags, "k")
+			pTag     = extractFirstTagValue(evt.Tags, "p")
+			params   = []any{evt.ID, evt.PubKey, evt.CreatedAt, evt.Kind, tagsj, expAt, evt.Content, evt.Sig, kTag, pTag}
+		)
 
-	return query, params, nil
+		return query, params, nil
+	} else {
+		// 对于非 kind=1059 事件，使用原有逻辑
+		const query = `INSERT INTO event (
+		id, pubkey, created_at, kind, tags, expiration_at, content, sig)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (id) DO NOTHING`
+
+		var (
+			tagsj, _ = json.Marshal(evt.Tags)
+			expAt    = extractExpirationAt(ctx, evt.ID, evt.Tags)
+			params   = []any{evt.ID, evt.PubKey, evt.CreatedAt, evt.Kind, tagsj, expAt, evt.Content, evt.Sig}
+		)
+
+		return query, params, nil
+	}
+}
+
+// 提取指定标签的第一个值
+func extractFirstTagValue(tags nostr.Tags, tagName string) sql.NullString {
+	for _, tag := range tags {
+		if len(tag) >= 2 && tag[0] == tagName {
+			return sql.NullString{String: tag[1], Valid: true}
+		}
+	}
+	return sql.NullString{Valid: false}
 }
 
 func extractExpirationAt(ctx context.Context, eventID string, tags nostr.Tags) sql.NullInt64 {
