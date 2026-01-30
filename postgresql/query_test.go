@@ -152,7 +152,7 @@ func TestQueryEventsSql(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			query, params, err := tt.backend.queryEventsSql(tt.filter, false)
+			query, params, err := tt.backend.queryEventsSql(tt.filter, false, "", true)
 			assert.Equal(t, tt.err, err)
 			if err != nil {
 				return

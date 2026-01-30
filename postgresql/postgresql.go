@@ -16,6 +16,10 @@ type PostgresBackend struct {
 	QueryKindsLimit   int
 	QueryTagsLimit    int
 	KeepRecentEvents  bool
+	
+	// 查询对比配置
+	EnableQueryComparison bool // 是否启用查询对比
+	UseOldQuery          bool // 对比时返回哪种查询结果，false=新查询，true=旧查询
 }
 
 func (b *PostgresBackend) Close() {

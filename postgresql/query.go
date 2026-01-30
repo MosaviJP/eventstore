@@ -20,7 +20,18 @@ func (b *PostgresBackend) QueryEvents(ctx context.Context, filter nostr.Filter) 
 		userPubkey = pubkey
 	}
 
-	query, params, err := b.queryEventsSql(filter, false, userPubkey)
+	// 检查是否需要对比查询（仅对kind=1059且有k标签的查询）
+	isKind1059Only := len(filter.Kinds) == 1 && filter.Kinds[0] == 1059
+	kTagValues := filter.Tags["k"]
+	needComparison := b.EnableQueryComparison && isKind1059Only && len(kTagValues) > 0
+
+	if needComparison {
+		// 执行双重查询并对比
+		return b.queryWithComparison(ctx, filter, userPubkey)
+	}
+
+	// 普通查询（使用优化路径）
+	query, params, err := b.queryEventsSql(filter, false, userPubkey, true)
 	if err != nil {
 		return nil, err
 	}
@@ -49,6 +60,7 @@ func (b *PostgresBackend) QueryEvents(ctx context.Context, filter nostr.Filter) 
 			err := rows.Scan(&evt.ID, &evt.PubKey, &timestamp,
 				&evt.Kind, &evt.Tags, &evt.Content, &evt.Sig)
 			if err != nil {
+				log.Printf("Error reading data from database: %s", err)
 				return
 			}
 			evt.CreatedAt = nostr.Timestamp(timestamp)
@@ -63,8 +75,184 @@ func (b *PostgresBackend) QueryEvents(ctx context.Context, filter nostr.Filter) 
 	return ch, nil
 }
 
+// queryWithComparison 并行执行新旧查询，立即返回配置的查询结果，异步对比
+func (b *PostgresBackend) queryWithComparison(ctx context.Context, filter nostr.Filter, userPubkey string) (ch chan *nostr.Event, err error) {
+	// 生成新旧查询
+	newQuery, newParams, err := b.queryEventsSql(filter, false, userPubkey, true)
+	if err != nil {
+		return nil, fmt.Errorf("new query generation failed: %w", err)
+	}
+
+	oldQuery, oldParams, err := b.queryEventsSql(filter, false, userPubkey, false)
+	if err != nil {
+		return nil, fmt.Errorf("old query generation failed: %w", err)
+	}
+
+	log.Printf("Starting parallel query execution%s", traceSuffix(ctx))
+	log.Printf("NEW: %s%s", formatSQLWithParams(newQuery, newParams), traceSuffix(ctx))
+	log.Printf("OLD: %s%s", formatSQLWithParams(oldQuery, oldParams), traceSuffix(ctx))
+
+	// 创建结果通道
+	ch = make(chan *nostr.Event)
+
+	// 并行执行两个查询
+	type queryResult struct {
+		events []*nostr.Event
+		err    error
+		isNew  bool
+	}
+
+	resultCh := make(chan queryResult, 2)
+
+	// 启动新查询
+	go func() {
+		events, err := b.executeQuery(ctx, newQuery, newParams)
+		resultCh <- queryResult{events: events, err: err, isNew: true}
+	}()
+
+	// 启动旧查询
+	go func() {
+		events, err := b.executeQuery(ctx, oldQuery, oldParams)
+		resultCh <- queryResult{events: events, err: err, isNew: false}
+	}()
+
+	// 等待配置的查询完成并立即返回
+	go func() {
+		defer close(ch)
+		
+		var primaryResult queryResult
+		var secondaryResult queryResult
+		var receivedPrimary bool = false
+		var receivedSecondary bool = false
+
+		// 等待两个结果
+		for i := 0; i < 2; i++ {
+			result := <-resultCh
+			
+			// 确定哪个是主要结果（需要立即返回的）
+			isPrimary := (b.UseOldQuery && !result.isNew) || (!b.UseOldQuery && result.isNew)
+			
+			if isPrimary {
+				primaryResult = result
+				receivedPrimary = true
+				
+				// 立即发送主要结果
+				if result.err != nil {
+					log.Printf("Primary query failed: %v%s", result.err, traceSuffix(ctx))
+					return
+				}
+				
+				for _, evt := range result.events {
+					select {
+					case ch <- evt:
+					case <-ctx.Done():
+						return
+					}
+				}
+			} else {
+				secondaryResult = result
+				receivedSecondary = true
+			}
+			
+			// 如果两个结果都收到了，异步处理对比
+			if receivedPrimary && receivedSecondary {
+				// 异步对比，不阻塞响应
+				go func() {
+					if secondaryResult.err != nil {
+						log.Printf("Secondary query failed: %v%s", secondaryResult.err, traceSuffix(ctx))
+						return
+					}
+					
+					var newEvents, oldEvents []*nostr.Event
+					if primaryResult.isNew {
+						newEvents = primaryResult.events
+						oldEvents = secondaryResult.events
+					} else {
+						newEvents = secondaryResult.events
+						oldEvents = primaryResult.events
+					}
+					
+					if err := b.compareQueryResults(newEvents, oldEvents, ctx); err != nil {
+						log.Printf("Async query comparison failed: %v%s", err, traceSuffix(ctx))
+					} else {
+						log.Printf("Async query comparison successful: both queries returned %d events%s", len(newEvents), traceSuffix(ctx))
+					}
+				}()
+				return
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
+// executeQuery 执行单个查询并返回事件列表
+func (b *PostgresBackend) executeQuery(ctx context.Context, query string, params []any) ([]*nostr.Event, error) {
+	rows, err := b.DB.QueryContext(ctx, query, params...)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return []*nostr.Event{}, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]*nostr.Event, 0)
+	for rows.Next() {
+		var evt nostr.Event
+		var timestamp int64
+		err := rows.Scan(&evt.ID, &evt.PubKey, &timestamp, &evt.Kind, &evt.Tags, &evt.Content, &evt.Sig)
+		if err != nil {
+			return nil, fmt.Errorf("scan failed: %w", err)
+		}
+		
+		evt.CreatedAt = nostr.Timestamp(timestamp)
+		events = append(events, &evt)
+	}
+	
+	return events, nil
+}
+
+// compareQueryResults 对比两个查询结果是否一致
+func (b *PostgresBackend) compareQueryResults(newEvents, oldEvents []*nostr.Event, ctx context.Context) error {
+	if len(newEvents) != len(oldEvents) {
+		log.Printf("[QUERY_COMPARISON_MISMATCH] Query result count mismatch: new=%d, old=%d%s", len(newEvents), len(oldEvents), traceSuffix(ctx))
+		return fmt.Errorf("result count mismatch: new query returned %d events, old query returned %d events", len(newEvents), len(oldEvents))
+	}
+
+	// 创建 ID 到事件的映射，用于对比
+	newEventMap := make(map[string]*nostr.Event)
+	oldEventMap := make(map[string]*nostr.Event)
+
+	for _, evt := range newEvents {
+		newEventMap[evt.ID] = evt
+	}
+
+	for _, evt := range oldEvents {
+		oldEventMap[evt.ID] = evt
+	}
+
+	// 检查是否有缺失的事件
+	for id := range newEventMap {
+		if _, exists := oldEventMap[id]; !exists {
+			log.Printf("[QUERY_COMPARISON_MISMATCH] Event %s found in new query but missing in old query%s", id, traceSuffix(ctx))
+			return fmt.Errorf("event %s found in new query but missing in old query", id)
+		}
+	}
+
+	for id := range oldEventMap {
+		if _, exists := newEventMap[id]; !exists {
+			log.Printf("[QUERY_COMPARISON_MISMATCH] Event %s found in old query but missing in new query%s", id, traceSuffix(ctx))
+			return fmt.Errorf("event %s found in old query but missing in new query", id)
+		}
+	}
+
+	log.Printf("Query comparison successful: both queries returned %d identical events%s", len(newEvents), traceSuffix(ctx))
+	return nil
+}
+
 func (b *PostgresBackend) CountEvents(ctx context.Context, filter nostr.Filter) (int64, error) {
-	query, params, err := b.queryEventsSql(filter, true, "")
+	query, params, err := b.queryEventsSql(filter, true, "", true)
 	if err != nil {
 		return 0, err
 	}
@@ -124,7 +312,7 @@ var (
 	EmptyTagSet      = errors.New("empty tag set")
 )
 
-func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, userPubkey string) (string, []any, error) {
+func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, userPubkey string, useOptimizedPath bool) (string, []any, error) {
 	conditions := make([]string, 0, 7)
 	params := make([]any, 0, 20)
 	buildOverlapCondition := func(placeholders []string) string {
@@ -261,7 +449,7 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	splitKTags := len(kTagValues) > 1
 	
 	// 针对 kind=1059 的优化路径：使用专门的函数索引
-	if isKind1059Only && len(kTagValues) > 0 {
+	if useOptimizedPath && isKind1059Only && len(kTagValues) > 0 {
 		// 构建 k 标签条件
 		kConditions := make([]string, 0, len(kTagValues))
 		for _, kValue := range kTagValues {
@@ -373,6 +561,17 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	conditions = append(conditions, normalTagConditions...)
 	if kTagCondition != "" {
 		conditions = append(conditions, kTagCondition)
+	}
+	
+	// 对于传统逻辑，如果有p标签（kind=1059），需要添加重叠条件
+	if !useOptimizedPath && len(pTagValues) > 0 {
+		pPlaceholders := make([]string, 0, len(pTagValues))
+		for _, pValue := range pTagValues {
+			params = append(params, pValue)
+			pPlaceholders = append(pPlaceholders, "?")
+		}
+		// 使用重叠条件：event.tagvalues && ARRAY[p1, p2, p3, ...]
+		conditions = append(conditions, buildOverlapCondition(pPlaceholders))
 	}
 
 	if filter.Since != nil && filter.Until != nil {
