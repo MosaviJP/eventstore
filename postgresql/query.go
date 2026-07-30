@@ -6,12 +6,23 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/nbd-wtf/go-nostr"
 )
+
+// debugSQLLog controls echoing of executed SQL statements to the log.
+// Off by default; set EVENTSTORE_SQL_LOG=verbose to enable.
+var debugSQLLog = func() bool {
+	switch strings.ToLower(os.Getenv("EVENTSTORE_SQL_LOG")) {
+	case "verbose", "debug", "on", "1", "true":
+		return true
+	}
+	return false
+}()
 
 func (b *PostgresBackend) QueryEvents(ctx context.Context, filter nostr.Filter) (ch chan *nostr.Event, err error) {
 	// 尝试从 context 中获取用户 pubkey
@@ -36,9 +47,9 @@ func (b *PostgresBackend) QueryEvents(ctx context.Context, filter nostr.Filter) 
 		return nil, err
 	}
 
-	// 打印实际执行的SQL语句（嵌入参数）
-	log.Printf("Executing SQL Query: %s%s", formatSQLWithParams(query, params), traceSuffix(ctx))
-	// log.Printf("filters: Kinds=%v, tags=%v", filter.Kinds, filter.Tags)
+	if debugSQLLog {
+		log.Printf("Executing SQL Query: %s%s", formatSQLWithParams(query, params), traceSuffix(ctx))
+	}
 
 	if ctx == nil {
 		fmt.Printf("QueryEvents: context is nil for filter: %v%s\n", filter, traceSuffix(ctx))
@@ -89,8 +100,10 @@ func (b *PostgresBackend) queryWithComparison(ctx context.Context, filter nostr.
 	}
 
 	log.Printf("Starting parallel query execution%s", traceSuffix(ctx))
-	log.Printf("NEW: %s%s", formatSQLWithParams(newQuery, newParams), traceSuffix(ctx))
-	log.Printf("OLD: %s%s", formatSQLWithParams(oldQuery, oldParams), traceSuffix(ctx))
+	if debugSQLLog {
+		log.Printf("NEW: %s%s", formatSQLWithParams(newQuery, newParams), traceSuffix(ctx))
+		log.Printf("OLD: %s%s", formatSQLWithParams(oldQuery, oldParams), traceSuffix(ctx))
+	}
 
 	// 创建结果通道
 	ch = make(chan *nostr.Event)
@@ -258,7 +271,9 @@ func (b *PostgresBackend) CountEvents(ctx context.Context, filter nostr.Filter) 
 	}
 
 	// 打印实际执行的SQL语句（嵌入参数）
-	log.Printf("Executing Count SQL Query: %s%s", formatSQLWithParams(query, params), traceSuffix(ctx))
+	if debugSQLLog {
+		log.Printf("Executing Count SQL Query: %s%s", formatSQLWithParams(query, params), traceSuffix(ctx))
+	}
 
 	var count int64
 	if err = b.DB.QueryRowContext(ctx, query, params...).Scan(&count); err != nil && err != sql.ErrNoRows {
