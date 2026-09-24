@@ -379,17 +379,19 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 					return "", nil, fmt.Errorf("user pubkey required for kinds 106/1404/1405 (or 1059 with k=3048/3049/3050)")
 				}
 
+				// 这里 schema 是【值】不是标识符，用占位符绑定，不做字符串插值。
+				schema := groupMgmtSchema()
 				var exists bool
 				if err := b.DB.QueryRow(`
 					SELECT EXISTS (
 						SELECT FROM information_schema.tables 
-						WHERE table_schema = 'moss_api' 
+						WHERE table_schema = $1 
 					AND table_name = 'dismsg_user_status'
-					)`).Scan(&exists); err != nil {
-					return "", nil, fmt.Errorf("failed to check moss_api.dismsg_user_status existence: %w", err)
+					)`, schema).Scan(&exists); err != nil {
+					return "", nil, fmt.Errorf("failed to check %s.dismsg_user_status existence: %w", schema, err)
 				}
 				if !exists {
-					return "", nil, fmt.Errorf("table moss_api.dismsg_user_status not found; required for kinds 106/1404/1405")
+					return "", nil, fmt.Errorf("table %s.dismsg_user_status not found; required for kinds 106/1404/1405", schema)
 				}
 
 				needDisappearingJoin = true
@@ -617,7 +619,7 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	extraConditions := make([]string, 0)
 
 	if needDisappearingJoin {
-		fromClause = "event LEFT JOIN moss_api.dismsg_user_status dus ON event.id = dus.event_id AND dus.user_pubkey = ?"
+		fromClause = fmt.Sprintf("event LEFT JOIN %s.dismsg_user_status dus ON event.id = dus.event_id AND dus.user_pubkey = ?", groupMgmtSchema())
 	}
 
 	normalKindConditions := make([]string, 0)
