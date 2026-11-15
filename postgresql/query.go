@@ -464,9 +464,15 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	// k标签处理逻辑
 	kTagCondition := ""
 	splitKTags := len(kTagValues) > 1
-	
+
+	// pTagValues 只在 kind=1059 优化路径（必须带 #k）里被转成 ptag 条件。
+	// 其他情况（旧路径，或优化路径但不带 #k）必须在下面补上 tagvalues 重叠条件，
+	// 否则 #p 条件会整体丢失（SEC-99-QTAG）。
+	pTagConsumed := false
+
 	// 针对 kind=1059 的优化路径：使用专门的函数索引
 	if useOptimizedPath && isKind1059Only && len(kTagValues) > 0 {
+		pTagConsumed = true
 		// 构建 k 标签条件
 		kConditions := make([]string, 0, len(kTagValues))
 		for _, kValue := range kTagValues {
@@ -580,8 +586,8 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		conditions = append(conditions, kTagCondition)
 	}
 	
-	// 对于传统逻辑，如果有p标签（kind=1059），需要添加重叠条件
-	if !useOptimizedPath && len(pTagValues) > 0 {
+	// kind=1059 的 p 标签未被优化路径使用时（传统逻辑，或优化路径但不带 #k），添加重叠条件
+	if !pTagConsumed && len(pTagValues) > 0 {
 		pPlaceholders := make([]string, 0, len(pTagValues))
 		for _, pValue := range pTagValues {
 			params = append(params, pValue)

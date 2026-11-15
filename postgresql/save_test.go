@@ -1,6 +1,7 @@
 package postgresql
 
 import (
+	"context"
 	"testing"
 
 	"github.com/nbd-wtf/go-nostr"
@@ -55,7 +56,7 @@ func TestSaveEventSql(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			query, params, err := saveEventSql(tt.event)
+			query, params, err := saveEventSql(context.Background(), tt.event)
 			assert.Equal(t, clean(tt.query), clean(query))
 			assert.Equal(t, tt.params, params)
 			assert.Equal(t, tt.err, err)
