@@ -379,17 +379,19 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 					return "", nil, fmt.Errorf("user pubkey required for kinds 106/1404/1405 (or 1059 with k=3048/3049/3050)")
 				}
 
+				// 这里 schema 是【值】不是标识符，用占位符绑定，不做字符串插值。
+				schema := groupMgmtSchema()
 				var exists bool
 				if err := b.DB.QueryRow(`
 					SELECT EXISTS (
 						SELECT FROM information_schema.tables 
-						WHERE table_schema = 'moss_api' 
+						WHERE table_schema = $1 
 					AND table_name = 'dismsg_user_status'
-					)`).Scan(&exists); err != nil {
-					return "", nil, fmt.Errorf("failed to check moss_api.dismsg_user_status existence: %w", err)
+					)`, schema).Scan(&exists); err != nil {
+					return "", nil, fmt.Errorf("failed to check %s.dismsg_user_status existence: %w", schema, err)
 				}
 				if !exists {
-					return "", nil, fmt.Errorf("table moss_api.dismsg_user_status not found; required for kinds 106/1404/1405")
+					return "", nil, fmt.Errorf("table %s.dismsg_user_status not found; required for kinds 106/1404/1405", schema)
 				}
 
 				needDisappearingJoin = true
@@ -462,9 +464,15 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	// k标签处理逻辑
 	kTagCondition := ""
 	splitKTags := len(kTagValues) > 1
-	
+
+	// pTagValues 只在 kind=1059 优化路径（必须带 #k）里被转成 ptag 条件。
+	// 其他情况（旧路径，或优化路径但不带 #k）必须在下面补上 tagvalues 重叠条件，
+	// 否则 #p 条件会整体丢失（SEC-99-QTAG）。
+	pTagConsumed := false
+
 	// 针对 kind=1059 的优化路径：使用专门的函数索引
 	if useOptimizedPath && isKind1059Only && len(kTagValues) > 0 {
+		pTagConsumed = true
 		// 构建 k 标签条件
 		kConditions := make([]string, 0, len(kTagValues))
 		for _, kValue := range kTagValues {
@@ -578,8 +586,8 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 		conditions = append(conditions, kTagCondition)
 	}
 	
-	// 对于传统逻辑，如果有p标签（kind=1059），需要添加重叠条件
-	if !useOptimizedPath && len(pTagValues) > 0 {
+	// kind=1059 的 p 标签未被优化路径使用时（传统逻辑，或优化路径但不带 #k），添加重叠条件
+	if !pTagConsumed && len(pTagValues) > 0 {
 		pPlaceholders := make([]string, 0, len(pTagValues))
 		for _, pValue := range pTagValues {
 			params = append(params, pValue)
@@ -617,7 +625,7 @@ func (b *PostgresBackend) queryEventsSql(filter nostr.Filter, doCount bool, user
 	extraConditions := make([]string, 0)
 
 	if needDisappearingJoin {
-		fromClause = "event LEFT JOIN moss_api.dismsg_user_status dus ON event.id = dus.event_id AND dus.user_pubkey = ?"
+		fromClause = fmt.Sprintf("event LEFT JOIN %s.dismsg_user_status dus ON event.id = dus.event_id AND dus.user_pubkey = ?", groupMgmtSchema())
 	}
 
 	normalKindConditions := make([]string, 0)
